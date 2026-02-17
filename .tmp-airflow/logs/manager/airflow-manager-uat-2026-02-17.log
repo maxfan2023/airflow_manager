@@ -1,0 +1,13 @@
+[2026-02-17 15:37:46] [INFO] Config file: /Users/max/devlop/airflow_manager/conf/airflow-manager-uat.conf
+[2026-02-17 15:37:46] [INFO] Run mode: env=uat action=status service=all-services dry_run=true
+[2026-02-17 15:37:46] [DRYRUN] source "/opt/conda/etc/profile.d/conda.sh" && conda activate "airflow-3.12"
+env      service         status     pid       
+-------- --------------- ---------  ----------
+uat      redis           stopped    -         
+uat      api-server      stopped    -         
+uat      scheduler       stopped    -         
+uat      dag-processor   stopped    -         
+uat      triggerer       stopped    -         
+uat      worker          stopped    -         
+uat      flower          stopped    -         
+[2026-02-17 15:37:46] [INFO] Completed successfully.
