@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import getpass
 import os
-import re
 from datetime import datetime
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
-from airflow.operators.empty import EmptyOperator
+from airflow.providers.apache.hive.operators.hive import HiveOperator
 
 
 DAG_ID = "hive_smoke_test_dag"
@@ -21,29 +20,7 @@ AIRFLOW_ENV = os.getenv("AIRFLOW_ENV", "dev").lower()
 DEV_MAX_KEYTAB_PATH = "/home/d373411/43373411.keytab"
 DEFAULT_KEYTAB_PATH = DEV_MAX_KEYTAB_PATH if AIRFLOW_ENV == "dev" else f"/home/{RUN_USER}/{RUN_USER}.keytab"
 KEYTAB_PATH = os.getenv("HIVE_TEST_KEYTAB_PATH", DEFAULT_KEYTAB_PATH)
-
-DEV_HIVE_JDBC_URL = (
-    "jdbc:hive2://"
-    "hkl25182035.hk.hsbc:2181,"
-    "hkl25182036.hk.hsbc:2181,"
-    "hkl25182161.hk.hsbc:2181/"
-    "default;"
-    "password=d3373411;"
-    "principal=hive/_HOST@HRES.ADROOT.HSBC;"
-    "serviceDiscoveryMode=zooKeeper;"
-    "ssl=true;"
-    "sslTrustStore=/opt/cloudera/security/pki/truststore.jks;"
-    "trustStorePassword=changeme;"
-    "truststoreType=jks;"
-    "user=d3373411;"
-    "zooKeeperNamespace=hiveserver2"
-)
-DEFAULT_HIVE_JDBC_URL = DEV_HIVE_JDBC_URL if AIRFLOW_ENV == "dev" else ""
-HIVE_JDBC_URL = re.sub(
-    r"\s+",
-    "",
-    os.getenv("HIVE_TEST_JDBC_URL", os.getenv("AB_HIVE_JDBC_URL", DEFAULT_HIVE_JDBC_URL)),
-)
+HIVE_CLI_CONN_ID = os.getenv("HIVE_TEST_HIVE_CLI_CONN_ID", "hive_cli_default")
 
 CREATE_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_FQN} (
@@ -86,20 +63,15 @@ with DAG(
             "RUN_USER": RUN_USER,
             "KERBEROS_PRINCIPAL": KERBEROS_PRINCIPAL,
             "KEYTAB_PATH": KEYTAB_PATH,
-            "HIVE_JDBC_URL": HIVE_JDBC_URL,
         },
         bash_command="""
         set -euo pipefail
         echo "Run user: ${RUN_USER}"
         echo "Airflow env: {{ params.airflow_env }}"
         echo "Airflow queue: {{ params.task_queue }}"
+        echo "Hive conn id: {{ params.hive_cli_conn_id }}"
         echo "Kerberos principal: ${KERBEROS_PRINCIPAL}"
         echo "Keytab: ${KEYTAB_PATH}"
-
-        if [ -z "${HIVE_JDBC_URL}" ]; then
-          echo "HIVE_JDBC_URL is empty. Please set HIVE_TEST_JDBC_URL or AB_HIVE_JDBC_URL." >&2
-          exit 1
-        fi
 
         if [ ! -f "${KEYTAB_PATH}" ]; then
           echo "Keytab not found: ${KEYTAB_PATH}" >&2
@@ -109,39 +81,31 @@ with DAG(
         kinit -kt "${KEYTAB_PATH}" "${KERBEROS_PRINCIPAL}"
         klist
         """,
-        params={"task_queue": TASK_QUEUE, "airflow_env": AIRFLOW_ENV},
+        params={"task_queue": TASK_QUEUE, "airflow_env": AIRFLOW_ENV, "hive_cli_conn_id": HIVE_CLI_CONN_ID},
     )
 
-    create_table = BashOperator(
-        task_id="create_hive_test_table_with_beeline",
+    create_table = HiveOperator(
+        task_id="create_hive_test_table",
         queue=TASK_QUEUE,
-        env={"HIVE_JDBC_URL": HIVE_JDBC_URL},
-        bash_command=f"""
-        set -euo pipefail
-        beeline -u "${{HIVE_JDBC_URL}}" --showHeader=false --outputformat=tsv2 -e "{CREATE_TABLE_SQL.strip()}"
-        """,
+        hive_cli_conn_id=HIVE_CLI_CONN_ID,
+        schema="default",
+        hql=CREATE_TABLE_SQL,
     )
 
-    insert_rows = BashOperator(
-        task_id="insert_hive_test_data_with_beeline",
+    insert_rows = HiveOperator(
+        task_id="insert_hive_test_data",
         queue=TASK_QUEUE,
-        env={"HIVE_JDBC_URL": HIVE_JDBC_URL},
-        bash_command=f"""
-        set -euo pipefail
-        beeline -u "${{HIVE_JDBC_URL}}" --showHeader=false --outputformat=tsv2 -e "{INSERT_SQL.strip()}"
-        """,
+        hive_cli_conn_id=HIVE_CLI_CONN_ID,
+        schema="default",
+        hql=INSERT_SQL,
     )
 
-    query_and_print = BashOperator(
-        task_id="query_and_print_hive_data_with_beeline",
+    query_and_print = HiveOperator(
+        task_id="query_and_print_hive_data",
         queue=TASK_QUEUE,
-        env={"HIVE_JDBC_URL": HIVE_JDBC_URL},
-        bash_command=f"""
-        set -euo pipefail
-        beeline -u "${{HIVE_JDBC_URL}}" --showHeader=true --outputformat=table -e "{SELECT_SQL.strip()}"
-        """,
+        hive_cli_conn_id=HIVE_CLI_CONN_ID,
+        schema="default",
+        hql=SELECT_SQL,
     )
 
-    done = EmptyOperator(task_id="done", queue=TASK_QUEUE)
-
-    kinit >> create_table >> insert_rows >> query_and_print >> done
+    kinit >> create_table >> insert_rows >> query_and_print
