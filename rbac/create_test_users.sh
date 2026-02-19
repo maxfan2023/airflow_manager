@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This helper script creates local users for quick RBAC verification.
+# It intentionally uses fixed usernames so repeated runs stay idempotent.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Defaults; override with CLI flags.
 ENV_NAME="dev"
 CONFIG_FILE=""
 PASSWORD=""
@@ -41,6 +44,7 @@ die() {
 }
 
 run_cmd() {
+  # Central execution wrapper to support --dry-run safely.
   if [[ "$DRY_RUN" == "true" ]]; then
     printf '[DRY-RUN] %q' "$1"
     shift
@@ -54,12 +58,14 @@ run_cmd() {
 }
 
 deactivate_conda_if_needed() {
+  # Keep shell environment clean after script finishes.
   if [[ "$CONDA_ACTIVATED" == "true" ]]; then
     conda deactivate >/dev/null 2>&1 || true
   fi
 }
 
 parse_args() {
+  # Parse required/optional arguments.
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -e|--env)
@@ -91,6 +97,7 @@ parse_args() {
 }
 
 load_config() {
+  # Reuse same env config as airflow-manager scripts.
   if [[ -z "$CONFIG_FILE" ]]; then
     CONFIG_FILE="${REPO_ROOT}/conf/airflow-manager-${ENV_NAME}.conf"
   fi
@@ -100,6 +107,7 @@ load_config() {
 }
 
 activate_conda_if_configured() {
+  # Airflow CLI must be available in active Python environment.
   if [[ -z "${CONDA_BASE:-}" || -z "${CONDA_ENV_NAME:-}" ]]; then
     return 0
   fi
@@ -132,6 +140,7 @@ activate_conda_if_configured() {
 }
 
 user_exists() {
+  # Query by username from Airflow user table.
   local username="$1"
   airflow users list -o plain | awk 'NR>1 {print $1}' | grep -Fxq "$username"
 }
@@ -142,6 +151,7 @@ create_user_if_missing() {
   local lastname="$3"
   local email="$4"
 
+  # Keep runs repeatable: skip create if user already exists.
   if user_exists "$username"; then
     log "User exists: $username"
     return 0
@@ -157,12 +167,14 @@ create_user_if_missing() {
 }
 
 grant_user_role() {
+  # Role grants are additive and idempotent in Airflow CLI.
   local username="$1"
   local role="$2"
   run_cmd airflow users add-role -u "$username" -r "$role"
 }
 
 main() {
+  # Ensure conda env deactivation no matter how script exits.
   trap deactivate_conda_if_needed EXIT
 
   parse_args "$@"
@@ -171,15 +183,19 @@ main() {
   activate_conda_if_configured
   command -v airflow >/dev/null 2>&1 || die "airflow command not found in PATH."
 
+  # 1) Normal user: can view + rerun, cannot trigger new DagRun.
   create_user_if_missing "rbac_normal" "RBAC" "Normal" "rbac_normal@example.local"
   grant_user_role "rbac_normal" "AF_RERUN_ALL_NO_TRIGGER"
 
+  # 2) US user: can trigger only US-scoped DAGs.
   create_user_if_missing "rbac_us_user" "RBAC" "USUser" "rbac_us_user@example.local"
   grant_user_role "rbac_us_user" "AF_TRIGGER_SCOPE_US"
 
+  # 3) Non-US privileged: can trigger non-US DAGs.
   create_user_if_missing "rbac_nonus_priv" "RBAC" "NonUSPriv" "rbac_nonus_priv@example.local"
   grant_user_role "rbac_nonus_priv" "AF_TRIGGER_SCOPE_NONUS"
 
+  # 4) US privileged: can trigger both US and non-US DAG sets.
   create_user_if_missing "rbac_us_priv" "RBAC" "USPriv" "rbac_us_priv@example.local"
   grant_user_role "rbac_us_priv" "AF_TRIGGER_SCOPE_US"
   grant_user_role "rbac_us_priv" "AF_TRIGGER_SCOPE_NONUS"
