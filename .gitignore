@@ -1,0 +1,16 @@
+# macOS metadata
+.DS_Store
+
+# Local runtime/log artifacts
+.tmp-airflow/
+
+# Offline bundle outputs (very large, do not commit)
+offline_bundle_*/
+offline_bundle_*.zip
+pkgs.tgz
+
+# Extra safety: package caches inside any offline bundle
+offline_bundle_*/conda/pkgs/
+offline_bundle_*/pip/wheels/
+offline_bundle_*/pip/sdists/
+offline_bundle_*/pip/raw/
