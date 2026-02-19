@@ -1,0 +1,8 @@
+# dag_id,scope
+# Use this file when existing dag_id does not follow "<scope>__<domain>__<name>".
+# Example:
+# us_sales_daily,us
+# payment_settlement,us
+# global_finance_etl,global
+# mx_reporting,mx
+
