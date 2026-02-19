@@ -32,6 +32,10 @@ HIVE_CLI_PARAMS = os.getenv(
     "--hiveconf javax.net.ssl.trustStorePassword=changeme "
     "--hiveconf javax.net.ssl.trustStoreType=jks",
 )
+HIVE_OPERATOR_AUTH = os.getenv(
+    "HIVE_TEST_HIVE_AUTH",
+    "KERBEROS;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2",
+)
 
 CREATE_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_FQN} (
@@ -70,10 +74,11 @@ def _validate_hive_cli_connection(hive_cli_conn_id: str) -> None:
     if "," in (conn.host or "") and not extra.get("high_availability", False):
         issues.append("Connection host has multiple endpoints, but extra.high_availability is not true.")
 
-    if extra.get("high_availability", False) and security != "kerberos":
+    if extra.get("high_availability", False) and security != "kerberos" and not HIVE_OPERATOR_AUTH:
         issues.append(
             f"Airflow core.security is '{security or 'empty'}'; set it to 'kerberos' so HiveOperator "
-            "builds JDBC URL with serviceDiscoveryMode/principal/zooKeeperNamespace."
+            "builds JDBC URL with serviceDiscoveryMode/principal/zooKeeperNamespace, "
+            "or set HIVE_TEST_HIVE_AUTH."
         )
 
     if issues:
@@ -113,10 +118,16 @@ with DAG(
         echo "Airflow env: {{ params.airflow_env }}"
         echo "Airflow queue: {{ params.task_queue }}"
         echo "Hive conn id: {{ params.hive_cli_conn_id }}"
+        echo "Hive auth: {{ params.hive_operator_auth }}"
         echo "Kerberos principal: ${KERBEROS_PRINCIPAL}"
         echo "Keytab: ${KEYTAB_PATH}"
         """,
-        params={"task_queue": TASK_QUEUE, "airflow_env": AIRFLOW_ENV, "hive_cli_conn_id": HIVE_CLI_CONN_ID},
+        params={
+            "task_queue": TASK_QUEUE,
+            "airflow_env": AIRFLOW_ENV,
+            "hive_cli_conn_id": HIVE_CLI_CONN_ID,
+            "hive_operator_auth": HIVE_OPERATOR_AUTH,
+        },
     )
 
     check_keytab_file = BashOperator(
@@ -162,6 +173,7 @@ with DAG(
         queue=TASK_QUEUE,
         hive_cli_conn_id=HIVE_CLI_CONN_ID,
         hive_cli_params=HIVE_CLI_PARAMS,
+        auth=HIVE_OPERATOR_AUTH,
         schema="default",
         hql=CREATE_TABLE_SQL,
     )
@@ -171,6 +183,7 @@ with DAG(
         queue=TASK_QUEUE,
         hive_cli_conn_id=HIVE_CLI_CONN_ID,
         hive_cli_params=HIVE_CLI_PARAMS,
+        auth=HIVE_OPERATOR_AUTH,
         schema="default",
         hql=INSERT_SQL,
     )
@@ -180,6 +193,7 @@ with DAG(
         queue=TASK_QUEUE,
         hive_cli_conn_id=HIVE_CLI_CONN_ID,
         hive_cli_params=HIVE_CLI_PARAMS,
+        auth=HIVE_OPERATOR_AUTH,
         schema="default",
         hql=SELECT_SQL,
     )
