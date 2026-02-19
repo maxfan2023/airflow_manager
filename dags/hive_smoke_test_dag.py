@@ -56,32 +56,56 @@ with DAG(
     default_args={"owner": RUN_USER, "retries": 0},
     tags=["hive", "smoke-test"],
 ) as dag:
-    kinit = BashOperator(
-        task_id="kinit_with_keytab",
+    kinit_env = {
+        "RUN_USER": RUN_USER,
+        "KERBEROS_PRINCIPAL": KERBEROS_PRINCIPAL,
+        "KEYTAB_PATH": KEYTAB_PATH,
+    }
+
+    print_runtime_context = BashOperator(
+        task_id="print_runtime_context",
         queue=TASK_QUEUE,
-        env={
-            "RUN_USER": RUN_USER,
-            "KERBEROS_PRINCIPAL": KERBEROS_PRINCIPAL,
-            "KEYTAB_PATH": KEYTAB_PATH,
-        },
+        env=kinit_env,
         bash_command="""
-        set -euo pipefail
         echo "Run user: ${RUN_USER}"
         echo "Airflow env: {{ params.airflow_env }}"
         echo "Airflow queue: {{ params.task_queue }}"
         echo "Hive conn id: {{ params.hive_cli_conn_id }}"
         echo "Kerberos principal: ${KERBEROS_PRINCIPAL}"
         echo "Keytab: ${KEYTAB_PATH}"
-
-        if [ ! -f "${KEYTAB_PATH}" ]; then
-          echo "Keytab not found: ${KEYTAB_PATH}" >&2
-          exit 1
-        fi
-
-        kinit -kt "${KEYTAB_PATH}" "${KERBEROS_PRINCIPAL}"
-        klist
         """,
         params={"task_queue": TASK_QUEUE, "airflow_env": AIRFLOW_ENV, "hive_cli_conn_id": HIVE_CLI_CONN_ID},
+    )
+
+    check_keytab_file = BashOperator(
+        task_id="check_keytab_file",
+        queue=TASK_QUEUE,
+        env=kinit_env,
+        bash_command="""
+        set -euo pipefail
+        test -f "${KEYTAB_PATH}"
+        ls -l "${KEYTAB_PATH}"
+        """,
+    )
+
+    run_kinit = BashOperator(
+        task_id="run_kinit",
+        queue=TASK_QUEUE,
+        env=kinit_env,
+        bash_command="""
+        set -euo pipefail
+        kinit -kt "${KEYTAB_PATH}" "${KERBEROS_PRINCIPAL}"
+        """,
+    )
+
+    show_klist = BashOperator(
+        task_id="show_klist",
+        queue=TASK_QUEUE,
+        env=kinit_env,
+        bash_command="""
+        set -euo pipefail
+        klist
+        """,
     )
 
     create_table = HiveOperator(
@@ -108,4 +132,5 @@ with DAG(
         hql=SELECT_SQL,
     )
 
-    kinit >> create_table >> insert_rows >> query_and_print
+    print_runtime_context >> check_keytab_file >> run_kinit >> show_klist
+    show_klist >> create_table >> insert_rows >> query_and_print
