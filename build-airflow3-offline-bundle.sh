@@ -68,6 +68,7 @@ EOF
 cat >"${PIP_DIR}/requirements-airflow.txt" <<EOF
 apache-airflow[${AIRFLOW_EXTRAS}]==${AIRFLOW_VERSION}
 apache-airflow-providers-celery
+apache-airflow-providers-fab
 flower>=2.0.0
 EOF
 
@@ -308,6 +309,13 @@ Offline bundle created: ${BUNDLE_DIR}
    bash ./pip/install_pip_offline.sh
 4) Validate:
    airflow version
+   python -m pip check
+5) Incremental install for FAB provider (optional, existing env):
+   conda activate airflow312
+   python -m pip install --no-index \
+     --find-links ./pip/wheels \
+     --constraint ./pip/constraints-${PYTHON_SERIES}.txt \
+     apache-airflow-providers-fab
    python -m pip check
 
 Files:
