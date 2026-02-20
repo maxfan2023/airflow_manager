@@ -37,6 +37,7 @@ HIVE_JDBC_URL = os.getenv(
 BEELINE_JAVA_HOME = os.getenv("HIVE_TEST_JAVA_HOME", os.getenv("AB_JAVA_HOME", os.getenv("JAVA_HOME", "")))
 BEELINE_BIN = os.getenv("HIVE_TEST_BEELINE_BIN", "beeline")
 BASH_INIT_FILE = os.path.expanduser(os.getenv("HIVE_TEST_BASH_INIT_FILE", "~/.bashr"))
+USER_HOME = os.path.expanduser("~")
 
 # HiveCliHook creates temporary files via Python tempfile; force company-approved tmp dir.
 os.environ["TMPDIR"] = AIRFLOW_TMP_DIR
@@ -169,6 +170,7 @@ with DAG(
 ) as dag:
     kinit_env = {
         "RUN_USER": RUN_USER,
+        "HOME": USER_HOME,
         "KERBEROS_PRINCIPAL": KERBEROS_PRINCIPAL,
         "KEYTAB_PATH": KEYTAB_PATH,
         "HIVE_LOCAL_SCRATCHDIR": HIVE_LOCAL_SCRATCHDIR,
@@ -192,9 +194,10 @@ with DAG(
         else
           echo "Bash init file not found: ${BASH_INIT_FILE}"
         fi
-        if [ -f "${HOME}/.bashrc" ] && [ "${BASH_INIT_FILE}" != "${HOME}/.bashrc" ]; then
-          source "${HOME}/.bashrc"
-          echo "Sourced ${HOME}/.bashrc"
+        home_dir="${HOME:-}"
+        if [ -n "${home_dir}" ] && [ -f "${home_dir}/.bashrc" ] && [ "${BASH_INIT_FILE}" != "${home_dir}/.bashrc" ]; then
+          source "${home_dir}/.bashrc"
+          echo "Sourced ${home_dir}/.bashrc"
         fi
         which java || true
         java -version || true
