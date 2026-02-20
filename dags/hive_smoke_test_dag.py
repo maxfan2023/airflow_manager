@@ -36,6 +36,7 @@ HIVE_JDBC_URL = os.getenv(
 )
 BEELINE_JAVA_HOME = os.getenv("HIVE_TEST_JAVA_HOME", os.getenv("AB_JAVA_HOME", os.getenv("JAVA_HOME", "")))
 BEELINE_BIN = os.getenv("HIVE_TEST_BEELINE_BIN", "beeline")
+BASH_INIT_FILE = os.path.expanduser(os.getenv("HIVE_TEST_BASH_INIT_FILE", "~/.bashr"))
 
 # HiveCliHook creates temporary files via Python tempfile; force company-approved tmp dir.
 os.environ["TMPDIR"] = AIRFLOW_TMP_DIR
@@ -172,11 +173,34 @@ with DAG(
         "KEYTAB_PATH": KEYTAB_PATH,
         "HIVE_LOCAL_SCRATCHDIR": HIVE_LOCAL_SCRATCHDIR,
         "BEELINE_BIN": BEELINE_BIN,
+        "BASH_INIT_FILE": BASH_INIT_FILE,
         "JAVA_HOME": BEELINE_JAVA_HOME,
         "TMPDIR": AIRFLOW_TMP_DIR,
         "TMP": AIRFLOW_TMP_DIR,
         "TEMP": AIRFLOW_TMP_DIR,
     }
+
+    source_user_bash_profile = BashOperator(
+        task_id="source_user_bash_profile",
+        queue=TASK_QUEUE,
+        env=kinit_env,
+        bash_command="""
+        set -euo pipefail
+        if [ -f "${BASH_INIT_FILE}" ]; then
+          source "${BASH_INIT_FILE}"
+          echo "Sourced ${BASH_INIT_FILE}"
+        else
+          echo "Bash init file not found: ${BASH_INIT_FILE}"
+        fi
+        if [ -f "${HOME}/.bashrc" ] && [ "${BASH_INIT_FILE}" != "${HOME}/.bashrc" ]; then
+          source "${HOME}/.bashrc"
+          echo "Sourced ${HOME}/.bashrc"
+        fi
+        which java || true
+        java -version || true
+        command -v "${BEELINE_BIN:-beeline}" || true
+        """,
+    )
 
     print_runtime_context = BashOperator(
         task_id="print_runtime_context",
@@ -190,6 +214,7 @@ with DAG(
         echo "Hive JDBC URL: {{ params.hive_jdbc_url }}"
         echo "hive.exec.local.scratchdir: {{ params.hive_local_scratchdir }}"
         echo "BEELINE_BIN: {{ params.beeline_bin }}"
+        echo "BASH_INIT_FILE: {{ params.bash_init_file }}"
         echo "JAVA_HOME: {{ params.java_home }}"
         echo "Kerberos principal: ${KERBEROS_PRINCIPAL}"
         echo "Keytab: ${KEYTAB_PATH}"
@@ -201,6 +226,7 @@ with DAG(
             "hive_jdbc_url": HIVE_JDBC_URL,
             "hive_local_scratchdir": HIVE_LOCAL_SCRATCHDIR,
             "beeline_bin": BEELINE_BIN,
+            "bash_init_file": BASH_INIT_FILE,
             "java_home": BEELINE_JAVA_HOME,
         },
     )
@@ -300,5 +326,6 @@ with DAG(
         hql=SELECT_SQL,
     )
 
+    source_user_bash_profile >> print_runtime_context
     print_runtime_context >> check_tmpdir >> check_keytab_file >> run_kinit >> show_klist
     show_klist >> check_java_for_beeline >> create_table >> insert_rows >> query_and_print
