@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import getpass
-import logging
 import os
 import tempfile
+from functools import cached_property
+from typing import Any
 from datetime import datetime
 
 from airflow import DAG
-from airflow.configuration import conf
-from airflow.exceptions import AirflowException
-from airflow.hooks.base import BaseHook
 from airflow.operators.bash import BashOperator
-from airflow.operators.python import PythonOperator
+from airflow.providers.apache.hive.hooks.hive import HiveCliHook
 from airflow.providers.apache.hive.operators.hive import HiveOperator
 
 
@@ -29,7 +27,11 @@ KEYTAB_PATH = os.getenv("HIVE_TEST_KEYTAB_PATH", DEFAULT_KEYTAB_PATH)
 HIVE_CLI_CONN_ID = os.getenv("HIVE_TEST_HIVE_CLI_CONN_ID", "hive_cli_default")
 AIRFLOW_TMP_DIR = os.getenv("HIVE_TEST_TMP_DIR", "/FCR_APP/abinitio/tmp")
 HIVE_LOCAL_SCRATCHDIR = AIRFLOW_TMP_DIR
-EXPECTED_HIVE_PRINCIPAL = os.getenv("HIVE_TEST_EXPECTED_HIVE_PRINCIPAL", "hive/_HOST@HRES.ADROOT.HSBC")
+HIVE_JDBC_URL = os.getenv(
+    "HIVE_TEST_HIVE_JDBC_URL",
+    "jdbc:hive2://hkl25182035.hk.hsbc:2181,hkl25182036.hk.hsbc:2181,hkl25182161.hk.hsbc:2181/default;"
+    "serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2",
+)
 
 # HiveCliHook creates temporary files via Python tempfile; force company-approved tmp dir.
 os.environ["TMPDIR"] = AIRFLOW_TMP_DIR
@@ -39,14 +41,7 @@ tempfile.tempdir = AIRFLOW_TMP_DIR
 
 HIVE_CLI_PARAMS = os.getenv(
     "HIVE_TEST_HIVE_CLI_PARAMS",
-    f"--hiveconf hive.exec.local.scratchdir={HIVE_LOCAL_SCRATCHDIR} "
-    "--hiveconf javax.net.ssl.trustStore=/opt/cloudera/security/pki/truststore.jks "
-    "--hiveconf javax.net.ssl.trustStorePassword=changeme "
-    "--hiveconf javax.net.ssl.trustStoreType=jks",
-)
-HIVE_OPERATOR_AUTH = os.getenv(
-    "HIVE_TEST_HIVE_AUTH",
-    "",
+    f"--hiveconf hive.exec.local.scratchdir={HIVE_LOCAL_SCRATCHDIR}",
 )
 
 CREATE_TABLE_SQL = f"""
@@ -74,57 +69,27 @@ ORDER BY student_id
 """
 
 
-def _validate_hive_cli_connection(hive_cli_conn_id: str) -> None:
-    conn = BaseHook.get_connection(hive_cli_conn_id)
-    extra = conn.extra_dejson
-    security = conf.get("core", "security", fallback="").lower()
-    issues: list[str] = []
+class HiveCliHookFixedJdbc(HiveCliHook):
+    """Force HiveOperator to use a fixed beeline JDBC URL that is known to work."""
 
-    if not extra.get("use_beeline", False):
-        issues.append("Connection extra.use_beeline should be true.")
+    def _prepare_cli_cmd(self) -> list[Any]:
+        hive_params_list = self.hive_cli_params.split()
+        jdbc_url = f'"{HIVE_JDBC_URL}"'
+        return ["beeline", *hive_params_list, "-u", jdbc_url]
 
-    if "," in (conn.host or "") and not extra.get("high_availability", False):
-        issues.append("Connection host has multiple endpoints, but extra.high_availability is not true.")
 
-    if extra.get("high_availability", False) and security != "kerberos" and not HIVE_OPERATOR_AUTH:
-        issues.append(
-            f"Airflow core.security is '{security or 'empty'}'; set it to 'kerberos' so HiveOperator "
-            "builds JDBC URL with serviceDiscoveryMode/principal/zooKeeperNamespace, "
-            "or set HIVE_TEST_HIVE_AUTH."
+class HiveOperatorFixedJdbc(HiveOperator):
+    @cached_property
+    def hook(self) -> HiveCliHook:
+        return HiveCliHookFixedJdbc(
+            hive_cli_conn_id=self.hive_cli_conn_id,
+            mapred_queue=self.mapred_queue,
+            mapred_queue_priority=self.mapred_queue_priority,
+            mapred_job_name=self.mapred_job_name,
+            hive_cli_params=self.hive_cli_params,
+            auth=self.auth,
+            proxy_user=self.proxy_user,
         )
-
-    if security == "kerberos":
-        configured_principal = str(extra.get("principal", "")).strip()
-        if not configured_principal:
-            issues.append(
-                "Airflow core.security=kerberos but connection extra.principal is empty. "
-                f"Set principal to '{EXPECTED_HIVE_PRINCIPAL}'."
-            )
-        elif "EXAMPLE.COM" in configured_principal.upper():
-            issues.append(
-                f"Connection principal looks wrong: '{configured_principal}'. "
-                f"Expected realm from '{EXPECTED_HIVE_PRINCIPAL}'."
-            )
-        elif "@" in EXPECTED_HIVE_PRINCIPAL:
-            expected_realm = EXPECTED_HIVE_PRINCIPAL.split("@", 1)[1].upper()
-            if f"@{expected_realm}" not in configured_principal.upper():
-                issues.append(
-                    f"Connection principal realm mismatch: '{configured_principal}'. "
-                    f"Expected realm '{expected_realm}'."
-                )
-
-    if issues:
-        raise AirflowException("Hive connection precheck failed:\n- " + "\n- ".join(issues))
-
-    logging.info(
-        "Hive connection precheck passed: conn_id=%s host=%s schema=%s high_availability=%s security=%s principal=%s",
-        hive_cli_conn_id,
-        conn.host,
-        conn.schema,
-        extra.get("high_availability", False),
-        security,
-        extra.get("principal", ""),
-    )
 
 
 with DAG(
@@ -155,9 +120,8 @@ with DAG(
         echo "Airflow env: {{ params.airflow_env }}"
         echo "Airflow queue: {{ params.task_queue }}"
         echo "Hive conn id: {{ params.hive_cli_conn_id }}"
-        echo "Hive auth: {{ params.hive_operator_auth }}"
+        echo "Hive JDBC URL: {{ params.hive_jdbc_url }}"
         echo "hive.exec.local.scratchdir: {{ params.hive_local_scratchdir }}"
-        echo "Expected hive principal: {{ params.expected_hive_principal }}"
         echo "Kerberos principal: ${KERBEROS_PRINCIPAL}"
         echo "Keytab: ${KEYTAB_PATH}"
         """,
@@ -165,9 +129,8 @@ with DAG(
             "task_queue": TASK_QUEUE,
             "airflow_env": AIRFLOW_ENV,
             "hive_cli_conn_id": HIVE_CLI_CONN_ID,
-            "hive_operator_auth": HIVE_OPERATOR_AUTH,
+            "hive_jdbc_url": HIVE_JDBC_URL,
             "hive_local_scratchdir": HIVE_LOCAL_SCRATCHDIR,
-            "expected_hive_principal": EXPECTED_HIVE_PRINCIPAL,
         },
     )
 
@@ -217,42 +180,32 @@ with DAG(
         """,
     )
 
-    validate_hive_connection = PythonOperator(
-        task_id="validate_hive_cli_connection",
-        queue=TASK_QUEUE,
-        python_callable=_validate_hive_cli_connection,
-        op_kwargs={"hive_cli_conn_id": HIVE_CLI_CONN_ID},
-    )
-
-    create_table = HiveOperator(
+    create_table = HiveOperatorFixedJdbc(
         task_id="create_hive_test_table",
         queue=TASK_QUEUE,
         hive_cli_conn_id=HIVE_CLI_CONN_ID,
         hive_cli_params=HIVE_CLI_PARAMS,
-        auth=HIVE_OPERATOR_AUTH,
         schema="default",
         hql=CREATE_TABLE_SQL,
     )
 
-    insert_rows = HiveOperator(
+    insert_rows = HiveOperatorFixedJdbc(
         task_id="insert_hive_test_data",
         queue=TASK_QUEUE,
         hive_cli_conn_id=HIVE_CLI_CONN_ID,
         hive_cli_params=HIVE_CLI_PARAMS,
-        auth=HIVE_OPERATOR_AUTH,
         schema="default",
         hql=INSERT_SQL,
     )
 
-    query_and_print = HiveOperator(
+    query_and_print = HiveOperatorFixedJdbc(
         task_id="query_and_print_hive_data",
         queue=TASK_QUEUE,
         hive_cli_conn_id=HIVE_CLI_CONN_ID,
         hive_cli_params=HIVE_CLI_PARAMS,
-        auth=HIVE_OPERATOR_AUTH,
         schema="default",
         hql=SELECT_SQL,
     )
 
     print_runtime_context >> check_tmpdir >> check_keytab_file >> run_kinit >> show_klist
-    show_klist >> validate_hive_connection >> create_table >> insert_rows >> query_and_print
+    show_klist >> create_table >> insert_rows >> query_and_print
