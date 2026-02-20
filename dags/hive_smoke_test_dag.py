@@ -32,12 +32,16 @@ HIVE_JDBC_URL = os.getenv(
     "jdbc:hive2://hkl25182035.hk.hsbc:2181,hkl25182036.hk.hsbc:2181,hkl25182161.hk.hsbc:2181/default;"
     "serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2",
 )
+BEELINE_JAVA_HOME = os.getenv("HIVE_TEST_JAVA_HOME", os.getenv("AB_JAVA_HOME", os.getenv("JAVA_HOME", "")))
 
 # HiveCliHook creates temporary files via Python tempfile; force company-approved tmp dir.
 os.environ["TMPDIR"] = AIRFLOW_TMP_DIR
 os.environ["TMP"] = AIRFLOW_TMP_DIR
 os.environ["TEMP"] = AIRFLOW_TMP_DIR
 tempfile.tempdir = AIRFLOW_TMP_DIR
+if BEELINE_JAVA_HOME:
+    os.environ["JAVA_HOME"] = BEELINE_JAVA_HOME
+    os.environ["PATH"] = f"{BEELINE_JAVA_HOME}/bin:{os.environ.get('PATH', '')}"
 
 HIVE_CLI_PARAMS = os.getenv(
     "HIVE_TEST_HIVE_CLI_PARAMS",
@@ -106,6 +110,7 @@ with DAG(
         "KERBEROS_PRINCIPAL": KERBEROS_PRINCIPAL,
         "KEYTAB_PATH": KEYTAB_PATH,
         "HIVE_LOCAL_SCRATCHDIR": HIVE_LOCAL_SCRATCHDIR,
+        "JAVA_HOME": BEELINE_JAVA_HOME,
         "TMPDIR": AIRFLOW_TMP_DIR,
         "TMP": AIRFLOW_TMP_DIR,
         "TEMP": AIRFLOW_TMP_DIR,
@@ -122,6 +127,7 @@ with DAG(
         echo "Hive conn id: {{ params.hive_cli_conn_id }}"
         echo "Hive JDBC URL: {{ params.hive_jdbc_url }}"
         echo "hive.exec.local.scratchdir: {{ params.hive_local_scratchdir }}"
+        echo "JAVA_HOME: {{ params.java_home }}"
         echo "Kerberos principal: ${KERBEROS_PRINCIPAL}"
         echo "Keytab: ${KEYTAB_PATH}"
         """,
@@ -131,6 +137,7 @@ with DAG(
             "hive_cli_conn_id": HIVE_CLI_CONN_ID,
             "hive_jdbc_url": HIVE_JDBC_URL,
             "hive_local_scratchdir": HIVE_LOCAL_SCRATCHDIR,
+            "java_home": BEELINE_JAVA_HOME,
         },
     )
 
@@ -180,6 +187,26 @@ with DAG(
         """,
     )
 
+    check_java_for_beeline = BashOperator(
+        task_id="check_java_for_beeline",
+        queue=TASK_QUEUE,
+        env=kinit_env,
+        bash_command="""
+        set -euo pipefail
+        echo "JAVA_HOME=${JAVA_HOME:-}"
+        which java
+        java -version
+
+        version="$(java -version 2>&1 | awk -F'"' '/version/ {print $2; exit}')"
+        major="$(echo "${version}" | awk -F. '{if ($1 == 1) print $2; else print $1}')"
+        echo "Detected Java major version: ${major}"
+        if [ "${major}" -lt 11 ]; then
+          echo "Java ${major} is too old for current beeline/spark libs. Please use Java 11+." >&2
+          exit 1
+        fi
+        """,
+    )
+
     create_table = HiveOperatorFixedJdbc(
         task_id="create_hive_test_table",
         queue=TASK_QUEUE,
@@ -208,4 +235,4 @@ with DAG(
     )
 
     print_runtime_context >> check_tmpdir >> check_keytab_file >> run_kinit >> show_klist
-    show_klist >> create_table >> insert_rows >> query_and_print
+    show_klist >> check_java_for_beeline >> create_table >> insert_rows >> query_and_print
