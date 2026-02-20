@@ -92,45 +92,43 @@ class HiveCliHookFixedJdbc(HiveCliHook):
     ) -> Any:
         """
         Run beeline with a fixed command shape:
-        beeline --hiveconf hive.exec.local.scratchdir=... -u "<fixed_jdbc>" -f <tmp_sql_file>
+        beeline --hiveconf hive.exec.local.scratchdir=... -u "<fixed_jdbc>" -e "<sql>"
         """
         conn = self.conn
         schema = schema or conn.schema or ""
         if schema:
             hql = f"USE {schema};\n{hql}"
 
-        with tempfile.TemporaryDirectory(prefix="airflow_hiveop_", dir=AIRFLOW_TMP_DIR) as tmp_dir:
-            with tempfile.NamedTemporaryFile(dir=tmp_dir, mode="w", encoding="utf-8") as sql_file:
-                sql_file.write(hql + "\n")
-                sql_file.flush()
+        hql = hql.strip()
+        if not hql.endswith(";"):
+            hql += ";"
 
-                hive_cmd = self._prepare_cli_cmd()
-                hive_cmd.extend(["-f", sql_file.name])
+        hive_cmd = self._prepare_cli_cmd()
+        hive_cmd.extend(["-e", hql])
 
-                if verbose:
-                    self.log.info("%s", " ".join(hive_cmd))
+        if verbose:
+            self.log.info("%s", " ".join(hive_cmd))
 
-                sub_process: Any = subprocess.Popen(
-                    hive_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=tmp_dir,
-                    close_fds=True,
-                )
-                self.sub_process = sub_process
-                stdout = ""
+        sub_process: Any = subprocess.Popen(
+            hive_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+        )
+        self.sub_process = sub_process
+        stdout = ""
 
-                for line_raw in iter(sub_process.stdout.readline, b""):
-                    line = line_raw.decode(errors="replace")
-                    stdout += line
-                    if verbose:
-                        self.log.info(line.strip())
+        for line_raw in iter(sub_process.stdout.readline, b""):
+            line = line_raw.decode(errors="replace")
+            stdout += line
+            if verbose:
+                self.log.info(line.strip())
 
-                sub_process.wait()
-                if sub_process.returncode:
-                    raise AirflowException(stdout)
+        sub_process.wait()
+        if sub_process.returncode:
+            raise AirflowException(stdout)
 
-                return stdout
+        return stdout
 
 
 class HiveOperatorFixedJdbc(HiveOperator):
