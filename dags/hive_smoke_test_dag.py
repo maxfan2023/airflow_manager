@@ -35,6 +35,7 @@ HIVE_JDBC_URL = os.getenv(
     "serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2",
 )
 BEELINE_JAVA_HOME = os.getenv("HIVE_TEST_JAVA_HOME", os.getenv("AB_JAVA_HOME", os.getenv("JAVA_HOME", "")))
+BEELINE_BIN = os.getenv("HIVE_TEST_BEELINE_BIN", "beeline")
 
 # HiveCliHook creates temporary files via Python tempfile; force company-approved tmp dir.
 os.environ["TMPDIR"] = AIRFLOW_TMP_DIR
@@ -81,7 +82,7 @@ class HiveCliHookFixedJdbc(HiveCliHook):
     def _prepare_cli_cmd(self) -> list[Any]:
         hive_params_list = self.hive_cli_params.split()
         jdbc_url = f'"{HIVE_JDBC_URL}"'
-        return ["beeline", *hive_params_list, "-u", jdbc_url]
+        return [BEELINE_BIN, *hive_params_list, "-u", jdbc_url]
 
     def run_cli(
         self,
@@ -106,14 +107,25 @@ class HiveCliHookFixedJdbc(HiveCliHook):
         hive_cmd = self._prepare_cli_cmd()
         hive_cmd.extend(["-e", hql])
 
+        proc_env = os.environ.copy()
+        if BEELINE_JAVA_HOME:
+            proc_env["JAVA_HOME"] = BEELINE_JAVA_HOME
+            proc_env["PATH"] = f"{BEELINE_JAVA_HOME}/bin:{proc_env.get('PATH', '')}"
+        proc_env["TMPDIR"] = AIRFLOW_TMP_DIR
+        proc_env["TMP"] = AIRFLOW_TMP_DIR
+        proc_env["TEMP"] = AIRFLOW_TMP_DIR
+
         if verbose:
             self.log.info("%s", " ".join(hive_cmd))
+            self.log.info("Using beeline binary: %s", BEELINE_BIN)
+            self.log.info("Using JAVA_HOME: %s", proc_env.get("JAVA_HOME", ""))
 
         sub_process: Any = subprocess.Popen(
             hive_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             close_fds=True,
+            env=proc_env,
         )
         self.sub_process = sub_process
         stdout = ""
@@ -159,6 +171,7 @@ with DAG(
         "KERBEROS_PRINCIPAL": KERBEROS_PRINCIPAL,
         "KEYTAB_PATH": KEYTAB_PATH,
         "HIVE_LOCAL_SCRATCHDIR": HIVE_LOCAL_SCRATCHDIR,
+        "BEELINE_BIN": BEELINE_BIN,
         "JAVA_HOME": BEELINE_JAVA_HOME,
         "TMPDIR": AIRFLOW_TMP_DIR,
         "TMP": AIRFLOW_TMP_DIR,
@@ -176,6 +189,7 @@ with DAG(
         echo "Hive conn id: {{ params.hive_cli_conn_id }}"
         echo "Hive JDBC URL: {{ params.hive_jdbc_url }}"
         echo "hive.exec.local.scratchdir: {{ params.hive_local_scratchdir }}"
+        echo "BEELINE_BIN: {{ params.beeline_bin }}"
         echo "JAVA_HOME: {{ params.java_home }}"
         echo "Kerberos principal: ${KERBEROS_PRINCIPAL}"
         echo "Keytab: ${KEYTAB_PATH}"
@@ -186,6 +200,7 @@ with DAG(
             "hive_cli_conn_id": HIVE_CLI_CONN_ID,
             "hive_jdbc_url": HIVE_JDBC_URL,
             "hive_local_scratchdir": HIVE_LOCAL_SCRATCHDIR,
+            "beeline_bin": BEELINE_BIN,
             "java_home": BEELINE_JAVA_HOME,
         },
     )
@@ -242,6 +257,8 @@ with DAG(
         env=kinit_env,
         bash_command="""
         set -euo pipefail
+        echo "BEELINE_BIN=${BEELINE_BIN:-beeline}"
+        command -v "${BEELINE_BIN:-beeline}"
         echo "JAVA_HOME=${JAVA_HOME:-}"
         which java
         java -version

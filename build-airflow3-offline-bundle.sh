@@ -199,7 +199,53 @@ install_system_build_deps() {
   fi
 }
 
+install_java17() {
+  local java_pkg=""
+  if command -v dnf >/dev/null 2>&1; then
+    for p in java-17-openjdk-devel java-17-openjdk java-17-openjdk-headless; do
+      if dnf install -y "${p}"; then
+        java_pkg="${p}"
+        break
+      fi
+    done
+    dnf clean all
+  elif command -v yum >/dev/null 2>&1; then
+    for p in java-17-openjdk-devel java-17-openjdk java-17-openjdk-headless; do
+      if yum install -y "${p}"; then
+        java_pkg="${p}"
+        break
+      fi
+    done
+    yum clean all
+  fi
+
+  if [[ -z "${java_pkg}" ]]; then
+    echo "ERROR: failed to install Java 17 package (tried java-17-openjdk*)." >&2
+    exit 1
+  fi
+
+  if ! command -v java >/dev/null 2>&1 || ! command -v javac >/dev/null 2>&1; then
+    echo "ERROR: java/javac not found after installing ${java_pkg}" >&2
+    exit 1
+  fi
+
+  export JAVA_HOME
+  JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+  export PATH="${JAVA_HOME}/bin:${PATH}"
+
+  local java_version_line java_major
+  java_version_line="$(java -version 2>&1 | head -n1)"
+  java_major="$(echo "${java_version_line}" | sed -E 's/.*version "([0-9]+).*/\1/')"
+  if [[ "${java_major}" != "17" ]]; then
+    echo "ERROR: expected Java 17, but got: ${java_version_line}" >&2
+    exit 1
+  fi
+
+  echo "Using Java for wheel builds: ${java_version_line}"
+}
+
 install_system_build_deps
+install_java17
 
 PYBIN="/opt/python/cp${PYTHON_TAG}-cp${PYTHON_TAG}/bin/python"
 if [[ ! -x "${PYBIN}" ]]; then
@@ -212,12 +258,13 @@ fi
 PIPBIN="${PYBIN%/python}/pip"
 
 "${PIPBIN}" install -U pip setuptools wheel build
-curl -fsSL "${CONSTRAINTS_URL}" -o "/bundle/pip/constraints-${PYTHON_SERIES}.txt"
+CONSTRAINT_FILE="/bundle/pip/constraints-${PYTHON_SERIES}.txt"
+curl -fsSL "${CONSTRAINTS_URL}" -o "${CONSTRAINT_FILE}"
 
 mkdir -p /bundle/pip/raw /bundle/pip/wheels /bundle/pip/sdists
 "${PIPBIN}" download \
   --dest /bundle/pip/raw \
-  --constraint "/bundle/pip/constraints-${PYTHON_SERIES}.txt" \
+  --constraint "${CONSTRAINT_FILE}" \
   --requirement /bundle/pip/requirements-airflow.txt
 
 find /bundle/pip/raw -maxdepth 1 -type f -name '*.whl' -exec cp -f {} /bundle/pip/wheels/ \;
@@ -226,7 +273,7 @@ find /bundle/pip/raw -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \)
 if compgen -G "/bundle/pip/sdists/*" >/dev/null; then
   "${PIPBIN}" wheel \
     --wheel-dir /bundle/pip/wheels \
-    --constraint "/bundle/pip/constraints-${PYTHON_SERIES}.txt" \
+    --constraint "${CONSTRAINT_FILE}" \
     /bundle/pip/sdists/*
 fi
 
@@ -234,7 +281,7 @@ fi
 source /tmp/pip-offline-check/bin/activate
 pip install -U pip
 pip install --no-index --find-links /bundle/pip/wheels \
-  --constraint "/bundle/pip/constraints-${PYTHON_SERIES}.txt" \
+  --constraint "${CONSTRAINT_FILE}" \
   --requirement /bundle/pip/requirements-airflow.txt
 python -c "import airflow; print('airflow version:', airflow.__version__)"
 pip check
