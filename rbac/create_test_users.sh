@@ -29,8 +29,8 @@ Options:
 Creates 4 local users for RBAC testing:
   rbac_normal      -> Viewer + AF_RERUN_ALL_NO_TRIGGER
   rbac_us_user     -> Viewer + AF_TRIGGER_SCOPE_US
-  rbac_nonus_priv  -> Viewer + AF_TRIGGER_SCOPE_NONUS
-  rbac_us_priv     -> Viewer + AF_TRIGGER_SCOPE_US + AF_TRIGGER_SCOPE_NONUS
+  rbac_nonus_priv  -> Viewer + AF_TRIGGER_SCOPE_GLOBAL
+  rbac_us_priv     -> Viewer + AF_TRIGGER_SCOPE_US + AF_TRIGGER_SCOPE_GLOBAL
 EOF
 }
 
@@ -104,6 +104,14 @@ load_config() {
   [[ -f "$CONFIG_FILE" ]] || die "Config file not found: $CONFIG_FILE"
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
+
+  # Keep user-management CLI behavior aligned with AIRFLOW_HOME local settings.
+  if [[ -n "${AIRFLOW_HOME:-}" ]]; then
+    case ":${PYTHONPATH:-}:" in
+      *":${AIRFLOW_HOME}:"*) ;;
+      *) export PYTHONPATH="${AIRFLOW_HOME}:${PYTHONPATH:-}" ;;
+    esac
+  fi
 }
 
 activate_conda_if_configured() {
@@ -191,14 +199,14 @@ main() {
   create_user_if_missing "rbac_us_user" "RBAC" "USUser" "rbac_us_user@example.local"
   grant_user_role "rbac_us_user" "AF_TRIGGER_SCOPE_US"
 
-  # 3) Non-US privileged: can trigger non-US DAGs.
+  # 3) Non-US privileged: can trigger global DAGs.
   create_user_if_missing "rbac_nonus_priv" "RBAC" "NonUSPriv" "rbac_nonus_priv@example.local"
-  grant_user_role "rbac_nonus_priv" "AF_TRIGGER_SCOPE_NONUS"
+  grant_user_role "rbac_nonus_priv" "AF_TRIGGER_SCOPE_GLOBAL"
 
-  # 4) US privileged: can trigger both US and non-US DAG sets.
+  # 4) US privileged: can trigger both US and global DAG sets.
   create_user_if_missing "rbac_us_priv" "RBAC" "USPriv" "rbac_us_priv@example.local"
   grant_user_role "rbac_us_priv" "AF_TRIGGER_SCOPE_US"
-  grant_user_role "rbac_us_priv" "AF_TRIGGER_SCOPE_NONUS"
+  grant_user_role "rbac_us_priv" "AF_TRIGGER_SCOPE_GLOBAL"
 
   log "Done. Verify with: airflow users list -o plain"
 }

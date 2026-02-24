@@ -174,6 +174,15 @@ load_config() {
 
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
+
+  # Ensure AIRFLOW_HOME local settings are importable in worker CLI subprocesses.
+  # This keeps policy behavior consistent with scheduler/webserver.
+  if [[ -n "${AIRFLOW_HOME:-}" ]]; then
+    case ":${PYTHONPATH:-}:" in
+      *":${AIRFLOW_HOME}:"*) ;;
+      *) export PYTHONPATH="${AIRFLOW_HOME}:${PYTHONPATH:-}" ;;
+    esac
+  fi
 }
 
 set_defaults() {

@@ -178,6 +178,15 @@ load_config() {
 
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
+
+  # Ensure AIRFLOW_HOME local settings are importable in every subprocess.
+  # This avoids silent policy misses when the caller shell has no PYTHONPATH.
+  if [[ -n "${AIRFLOW_HOME:-}" ]]; then
+    case ":${PYTHONPATH:-}:" in
+      *":${AIRFLOW_HOME}:"*) ;;
+      *) export PYTHONPATH="${AIRFLOW_HOME}:${PYTHONPATH:-}" ;;
+    esac
+  fi
 }
 
 set_defaults() {
