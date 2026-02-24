@@ -34,6 +34,7 @@ HIVE_JDBC_URL = os.getenv(
     "jdbc:hive2://hkl25182035.hk.hsbc:2181,hkl25182036.hk.hsbc:2181,hkl25182161.hk.hsbc:2181/default;"
     "serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2",
 )
+HIVE_JDBC_PRINCIPAL = os.getenv("HIVE_TEST_HIVE_JDBC_PRINCIPAL", "hive/_HOST@HRES.ADROOT.HSBC")
 BEELINE_JAVA_HOME = os.getenv("HIVE_TEST_JAVA_HOME", os.getenv("AB_JAVA_HOME", os.getenv("JAVA_HOME", "")))
 BEELINE_BIN = os.getenv("HIVE_TEST_BEELINE_BIN", "beeline")
 BASH_INIT_FILE = os.path.expanduser(os.getenv("HIVE_TEST_BASH_INIT_FILE", "~/.bashr"))
@@ -81,10 +82,39 @@ ORDER BY student_id
 class HiveCliHookFixedJdbc(HiveCliHook):
     """Force HiveOperator to use a fixed beeline JDBC URL that is known to work."""
 
-    def _prepare_cli_cmd(self) -> list[Any]:
+    def _prepare_cli_cmd(self, jdbc_url_value: str) -> list[Any]:
         hive_params_list = self.hive_cli_params.split()
-        jdbc_url = f'"{HIVE_JDBC_URL}"'
+        jdbc_url = f'"{jdbc_url_value}"'
         return [BEELINE_BIN, *hive_params_list, "-u", jdbc_url]
+
+    def _build_retry_jdbc_url_with_principal(self, jdbc_url_value: str) -> str:
+        if "principal=" in jdbc_url_value.lower() or not HIVE_JDBC_PRINCIPAL:
+            return jdbc_url_value
+        sep = "" if jdbc_url_value.endswith(";") else ";"
+        return f"{jdbc_url_value}{sep}principal={HIVE_JDBC_PRINCIPAL}"
+
+    def _run_beeline_cmd(self, hive_cmd: list[Any], proc_env: dict[str, str], verbose: bool) -> tuple[int, str]:
+        if verbose:
+            self.log.info("%s", " ".join(hive_cmd))
+            self.log.info("Using beeline binary: %s", BEELINE_BIN)
+            self.log.info("Using JAVA_HOME: %s", proc_env.get("JAVA_HOME", ""))
+
+        sub_process: Any = subprocess.Popen(
+            hive_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            env=proc_env,
+        )
+        self.sub_process = sub_process
+        stdout = ""
+        for line_raw in iter(sub_process.stdout.readline, b""):
+            line = line_raw.decode(errors="replace")
+            stdout += line
+            if verbose:
+                self.log.info(line.strip())
+        sub_process.wait()
+        return sub_process.returncode, stdout
 
     def run_cli(
         self,
@@ -106,9 +136,6 @@ class HiveCliHookFixedJdbc(HiveCliHook):
         if not hql.endswith(";"):
             hql += ";"
 
-        hive_cmd = self._prepare_cli_cmd()
-        hive_cmd.extend(["-e", hql])
-
         proc_env = os.environ.copy()
         if BEELINE_JAVA_HOME:
             proc_env["JAVA_HOME"] = BEELINE_JAVA_HOME
@@ -117,32 +144,33 @@ class HiveCliHookFixedJdbc(HiveCliHook):
         proc_env["TMP"] = AIRFLOW_TMP_DIR
         proc_env["TEMP"] = AIRFLOW_TMP_DIR
 
-        if verbose:
-            self.log.info("%s", " ".join(hive_cmd))
-            self.log.info("Using beeline binary: %s", BEELINE_BIN)
-            self.log.info("Using JAVA_HOME: %s", proc_env.get("JAVA_HOME", ""))
+        hive_cmd = self._prepare_cli_cmd(HIVE_JDBC_URL)
+        hive_cmd.extend(["-e", hql])
+        rc, stdout = self._run_beeline_cmd(hive_cmd, proc_env, verbose)
+        if rc == 0:
+            return stdout
 
-        sub_process: Any = subprocess.Popen(
-            hive_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            close_fds=True,
-            env=proc_env,
-        )
-        self.sub_process = sub_process
-        stdout = ""
+        low_stdout = stdout.lower()
+        needs_principal_retry = (
+            "sasl negotiation failure" in low_stdout or "gss initiate failed" in low_stdout
+        ) and "principal=" not in HIVE_JDBC_URL.lower()
 
-        for line_raw in iter(sub_process.stdout.readline, b""):
-            line = line_raw.decode(errors="replace")
-            stdout += line
-            if verbose:
-                self.log.info(line.strip())
+        if needs_principal_retry:
+            retry_jdbc_url = self._build_retry_jdbc_url_with_principal(HIVE_JDBC_URL)
+            self.log.warning(
+                "Beeline auth failed with current JDBC URL. Retrying once with principal in URL: %s",
+                HIVE_JDBC_PRINCIPAL,
+            )
+            retry_cmd = self._prepare_cli_cmd(retry_jdbc_url)
+            retry_cmd.extend(["-e", hql])
+            rc_retry, stdout_retry = self._run_beeline_cmd(retry_cmd, proc_env, verbose)
+            if rc_retry == 0:
+                return stdout_retry
+            stdout = stdout + "\n\n[Retry with principal failed]\n" + stdout_retry
 
-        sub_process.wait()
-        if sub_process.returncode:
-            raise AirflowException(stdout)
+        raise AirflowException(stdout)
 
-        return stdout
+        
 
 
 class HiveOperatorFixedJdbc(HiveOperator):
@@ -215,6 +243,7 @@ with DAG(
         echo "Airflow queue: {{ params.task_queue }}"
         echo "Hive conn id: {{ params.hive_cli_conn_id }}"
         echo "Hive JDBC URL: {{ params.hive_jdbc_url }}"
+        echo "Hive JDBC principal: {{ params.hive_jdbc_principal }}"
         echo "hive.exec.local.scratchdir: {{ params.hive_local_scratchdir }}"
         echo "BEELINE_BIN: {{ params.beeline_bin }}"
         echo "BASH_INIT_FILE: {{ params.bash_init_file }}"
@@ -227,6 +256,7 @@ with DAG(
             "airflow_env": AIRFLOW_ENV,
             "hive_cli_conn_id": HIVE_CLI_CONN_ID,
             "hive_jdbc_url": HIVE_JDBC_URL,
+            "hive_jdbc_principal": HIVE_JDBC_PRINCIPAL,
             "hive_local_scratchdir": HIVE_LOCAL_SCRATCHDIR,
             "beeline_bin": BEELINE_BIN,
             "bash_init_file": BASH_INIT_FILE,

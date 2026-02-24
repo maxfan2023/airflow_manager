@@ -69,6 +69,7 @@ cat >"${PIP_DIR}/requirements-airflow.txt" <<EOF
 apache-airflow[${AIRFLOW_EXTRAS}]==${AIRFLOW_VERSION}
 apache-airflow-providers-celery
 apache-airflow-providers-fab
+graphviz
 flower>=2.0.0
 EOF
 
