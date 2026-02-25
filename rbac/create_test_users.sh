@@ -173,8 +173,16 @@ load_password() {
 
 user_exists() {
   # Query by username from Airflow user table.
+  # In dry-run mode, skip DB calls and show full create/grant plan.
+  if [[ "$DRY_RUN" == "true" ]]; then
+    return 1
+  fi
   local username="$1"
-  airflow users list -o plain | awk 'NR>1 {print $1}' | grep -Fxq "$username"
+  # Airflow 3 plain output starts with numeric ID column; older formats may not.
+  # Keep compatibility by selecting column 2 when column 1 is numeric, else column 1.
+  airflow users list -o plain \
+    | awk 'NR>1 {if ($1 ~ /^[0-9]+$/ && $2 != "") print $2; else print $1}' \
+    | grep -Fxq "$username"
 }
 
 create_user_if_missing() {

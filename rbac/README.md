@@ -108,7 +108,29 @@ airflow roles list -p -o plain | grep -E 'AF_RERUN_ALL_NO_TRIGGER|AF_TRIGGER_SCO
 airflow users list -o plain
 ```
 
-## 6) LDAP / AD Group 建议
+## 6) 回滚（删除 custom roles + 测试用户）
+
+默认删除以下对象（存在才删）：
+
+- users: `rbac_normal`、`rbac_us_user`、`rbac_nonus_priv`、`rbac_us_priv`
+- roles: `AF_RERUN_ALL_NO_TRIGGER`、`AF_TRIGGER_SCOPE_GLOBAL`、`AF_TRIGGER_SCOPE_NONUS`（兼容旧命名）、`AF_TRIGGER_SCOPE_US`、`AF_TRIGGER_SCOPE_MX`、`AF_TRIGGER_SCOPE_CN`
+
+```bash
+./rbac/teardown_region_rbac.sh \
+  --env dev \
+  --config /home/max/development/airflow/conf/airflow-manager-dev.conf
+```
+
+如果你还想同时禁用目录策略文件（把 `airflow_local_settings.py` 改名为 `.bak.<timestamp>`）：
+
+```bash
+./rbac/teardown_region_rbac.sh \
+  --env dev \
+  --config /home/max/development/airflow/conf/airflow-manager-dev.conf \
+  --disable-policy
+```
+
+## 7) LDAP / AD Group 建议
 
 能力组：
 
@@ -132,7 +154,7 @@ AUTH_ROLES_MAPPING = {
 }
 ```
 
-## 7) 重要边界
+## 8) 重要边界
 
 `AF_RERUN_ALL_NO_TRIGGER` 依赖 `DAGs.can_edit`，会附带 pause/unpause 等编辑能力。
 如果要“只能 rerun、不能 pause”，需要自定义 Auth Manager 逻辑。
