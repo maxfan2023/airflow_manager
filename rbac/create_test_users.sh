@@ -15,6 +15,18 @@ DRY_RUN=false
 
 CONDA_ACTIVATED=false
 
+# Roles managed by this script for test users.
+# Extra roles outside this set are left untouched.
+MANAGED_TEST_ROLES=(
+  "Viewer"
+  "AF_RERUN_ALL_NO_TRIGGER"
+  "AF_TRIGGER_SCOPE_GLOBAL"
+  "AF_TRIGGER_SCOPE_NONUS"
+  "AF_TRIGGER_SCOPE_US"
+  "AF_TRIGGER_SCOPE_MX"
+  "AF_TRIGGER_SCOPE_CN"
+)
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -185,6 +197,51 @@ user_exists() {
     | grep -Fxq "$username"
 }
 
+role_in_array() {
+  local needle="$1"
+  shift
+  local role
+  for role in "$@"; do
+    if [[ "$role" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+get_user_roles() {
+  # Return one role per line for a given username, parsed from "users list -o plain".
+  local username="$1"
+  local row roles_blob raw role_clean
+
+  row="$(
+    airflow users list -o plain | awk -v username="$username" '
+      NR > 1 {
+        user_col = ($1 ~ /^[0-9]+$/ && $2 != "") ? $2 : $1
+        if (user_col == username) {
+          print
+          exit
+        }
+      }
+    '
+  )"
+
+  [[ -n "$row" ]] || return 1
+
+  # Role list is rendered as Python-like list: ['Viewer', 'RoleA']
+  roles_blob="${row#*\[}"
+  if [[ "$roles_blob" == "$row" ]]; then
+    return 0
+  fi
+  roles_blob="${roles_blob%]*}"
+
+  IFS=',' read -r -a raw_roles <<<"$roles_blob"
+  for raw in "${raw_roles[@]}"; do
+    role_clean="$(printf '%s' "$raw" | sed -e "s/[[:space:]]//g" -e "s/'//g" -e 's/"//g')"
+    [[ -n "$role_clean" ]] && printf '%s\n' "$role_clean"
+  done
+}
+
 create_user_if_missing() {
   local username="$1"
   local firstname="$2"
@@ -213,6 +270,56 @@ grant_user_role() {
   run_cmd airflow users add-role -u "$username" -r "$role"
 }
 
+remove_user_role() {
+  local username="$1"
+  local role="$2"
+  run_cmd airflow users remove-role -u "$username" -r "$role"
+}
+
+reconcile_user_roles() {
+  # Ensure user has exactly required roles within MANAGED_TEST_ROLES.
+  # Missing roles will be added; managed-but-unwanted roles will be removed.
+  local username="$1"
+  shift
+  local desired_roles=("$@")
+  local current_roles=()
+  local role
+  local changed=false
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    # Dry-run avoids DB reads; print intended grants only.
+    for role in "${desired_roles[@]}"; do
+      grant_user_role "$username" "$role"
+    done
+    log "Dry-run: skipped role diff check for $username"
+    return 0
+  fi
+
+  while IFS= read -r role; do
+    [[ -n "$role" ]] && current_roles+=("$role")
+  done < <(get_user_roles "$username" || true)
+
+  # Add missing desired roles.
+  for role in "${desired_roles[@]}"; do
+    if ! role_in_array "$role" "${current_roles[@]}"; then
+      grant_user_role "$username" "$role"
+      changed=true
+    fi
+  done
+
+  # Remove roles that this script manages but are not desired for this user.
+  for role in "${current_roles[@]}"; do
+    if role_in_array "$role" "${MANAGED_TEST_ROLES[@]}" && ! role_in_array "$role" "${desired_roles[@]}"; then
+      remove_user_role "$username" "$role"
+      changed=true
+    fi
+  done
+
+  if [[ "$changed" == "false" ]]; then
+    log "Roles already aligned: $username"
+  fi
+}
+
 main() {
   # Ensure conda env deactivation no matter how script exits.
   trap deactivate_conda_if_needed EXIT
@@ -225,23 +332,31 @@ main() {
 
   # 1) Normal user: can view + rerun, cannot trigger new DagRun.
   create_user_if_missing "rbac_normal" "RBAC" "Normal" "rbac_normal@example.local"
-  grant_user_role "rbac_normal" "AF_RERUN_ALL_NO_TRIGGER"
+  reconcile_user_roles "rbac_normal" \
+    "Viewer" \
+    "AF_RERUN_ALL_NO_TRIGGER"
 
   # 2) US user: can trigger US DAGs and rerun any task.
   create_user_if_missing "rbac_us_user" "RBAC" "USUser" "rbac_us_user@example.local"
-  grant_user_role "rbac_us_user" "AF_TRIGGER_SCOPE_US"
-  grant_user_role "rbac_us_user" "AF_RERUN_ALL_NO_TRIGGER"
+  reconcile_user_roles "rbac_us_user" \
+    "Viewer" \
+    "AF_TRIGGER_SCOPE_US" \
+    "AF_RERUN_ALL_NO_TRIGGER"
 
   # 3) Non-US privileged: can trigger global DAGs and rerun any task.
   create_user_if_missing "rbac_nonus_priv" "RBAC" "NonUSPriv" "rbac_nonus_priv@example.local"
-  grant_user_role "rbac_nonus_priv" "AF_TRIGGER_SCOPE_GLOBAL"
-  grant_user_role "rbac_nonus_priv" "AF_RERUN_ALL_NO_TRIGGER"
+  reconcile_user_roles "rbac_nonus_priv" \
+    "Viewer" \
+    "AF_TRIGGER_SCOPE_GLOBAL" \
+    "AF_RERUN_ALL_NO_TRIGGER"
 
   # 4) US privileged: can trigger both US/global DAGs and rerun any task.
   create_user_if_missing "rbac_us_priv" "RBAC" "USPriv" "rbac_us_priv@example.local"
-  grant_user_role "rbac_us_priv" "AF_TRIGGER_SCOPE_US"
-  grant_user_role "rbac_us_priv" "AF_TRIGGER_SCOPE_GLOBAL"
-  grant_user_role "rbac_us_priv" "AF_RERUN_ALL_NO_TRIGGER"
+  reconcile_user_roles "rbac_us_priv" \
+    "Viewer" \
+    "AF_TRIGGER_SCOPE_US" \
+    "AF_TRIGGER_SCOPE_GLOBAL" \
+    "AF_RERUN_ALL_NO_TRIGGER"
 
   log "Done. Verify with: airflow users list -o plain"
 }
