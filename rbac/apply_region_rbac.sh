@@ -258,9 +258,9 @@ Next required step:
 
 User-role examples:
   - normal user: Viewer + AF_RERUN_ALL_NO_TRIGGER
-  - US user: Viewer + AF_TRIGGER_SCOPE_US
-  - non-US privileged: Viewer + AF_TRIGGER_SCOPE_GLOBAL
-  - US privileged: Viewer + AF_TRIGGER_SCOPE_GLOBAL + AF_TRIGGER_SCOPE_US
+  - US user: Viewer + AF_TRIGGER_SCOPE_US + AF_RERUN_ALL_NO_TRIGGER
+  - non-US privileged: Viewer + AF_TRIGGER_SCOPE_GLOBAL + AF_RERUN_ALL_NO_TRIGGER
+  - US privileged: Viewer + AF_TRIGGER_SCOPE_GLOBAL + AF_TRIGGER_SCOPE_US + AF_RERUN_ALL_NO_TRIGGER
 EOT
 
   log "Managed scope roles created in this run:"

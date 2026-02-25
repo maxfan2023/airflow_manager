@@ -10,6 +10,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_NAME="dev"
 CONFIG_FILE=""
 PASSWORD=""
+PASSWORD_FILE=""
 DRY_RUN=false
 
 CONDA_ACTIVATED=false
@@ -22,15 +23,16 @@ Usage:
 Options:
   -e, --env <dev|uat|prod>    Select environment config (default: dev)
   -c, --config <path>         Path to airflow-manager config file
-  -p, --password <text>       Password for all test users (required)
+  -p, --password <text>       Password for all test users
+  -P, --password-file <path>  Read password from file (first line)
   -n, --dry-run               Print commands only
   -h, --help                  Show this help
 
 Creates 4 local users for RBAC testing:
   rbac_normal      -> Viewer + AF_RERUN_ALL_NO_TRIGGER
-  rbac_us_user     -> Viewer + AF_TRIGGER_SCOPE_US
-  rbac_nonus_priv  -> Viewer + AF_TRIGGER_SCOPE_GLOBAL
-  rbac_us_priv     -> Viewer + AF_TRIGGER_SCOPE_US + AF_TRIGGER_SCOPE_GLOBAL
+  rbac_us_user     -> Viewer + AF_TRIGGER_SCOPE_US + AF_RERUN_ALL_NO_TRIGGER
+  rbac_nonus_priv  -> Viewer + AF_TRIGGER_SCOPE_GLOBAL + AF_RERUN_ALL_NO_TRIGGER
+  rbac_us_priv     -> Viewer + AF_TRIGGER_SCOPE_US + AF_TRIGGER_SCOPE_GLOBAL + AF_RERUN_ALL_NO_TRIGGER
 EOF
 }
 
@@ -78,6 +80,10 @@ parse_args() {
         ;;
       -p|--password)
         PASSWORD="${2:-}"
+        shift 2
+        ;;
+      -P|--password-file)
+        PASSWORD_FILE="${2:-}"
         shift 2
         ;;
       -n|--dry-run)
@@ -147,6 +153,24 @@ activate_conda_if_configured() {
   die "Cannot find conda activation scripts under CONDA_BASE=$CONDA_BASE"
 }
 
+load_password() {
+  # Do not allow conflicting secret sources.
+  if [[ -n "$PASSWORD" && -n "$PASSWORD_FILE" ]]; then
+    die "Use either --password or --password-file, not both."
+  fi
+
+  # Password file keeps secrets out of process list and shell history.
+  if [[ -n "$PASSWORD_FILE" ]]; then
+    [[ -f "$PASSWORD_FILE" ]] || die "Password file not found: $PASSWORD_FILE"
+    [[ -r "$PASSWORD_FILE" ]] || die "Password file is not readable: $PASSWORD_FILE"
+    PASSWORD="$(<"$PASSWORD_FILE")"
+    # Trim Windows CR if present.
+    PASSWORD="${PASSWORD%$'\r'}"
+  fi
+
+  [[ -n "$PASSWORD" ]] || die "Either --password or --password-file is required."
+}
+
 user_exists() {
   # Query by username from Airflow user table.
   local username="$1"
@@ -186,7 +210,7 @@ main() {
   trap deactivate_conda_if_needed EXIT
 
   parse_args "$@"
-  [[ -n "$PASSWORD" ]] || die "--password is required."
+  load_password
   load_config
   activate_conda_if_configured
   command -v airflow >/dev/null 2>&1 || die "airflow command not found in PATH."
@@ -195,18 +219,21 @@ main() {
   create_user_if_missing "rbac_normal" "RBAC" "Normal" "rbac_normal@example.local"
   grant_user_role "rbac_normal" "AF_RERUN_ALL_NO_TRIGGER"
 
-  # 2) US user: can trigger only US-scoped DAGs.
+  # 2) US user: can trigger US DAGs and rerun any task.
   create_user_if_missing "rbac_us_user" "RBAC" "USUser" "rbac_us_user@example.local"
   grant_user_role "rbac_us_user" "AF_TRIGGER_SCOPE_US"
+  grant_user_role "rbac_us_user" "AF_RERUN_ALL_NO_TRIGGER"
 
-  # 3) Non-US privileged: can trigger global DAGs.
+  # 3) Non-US privileged: can trigger global DAGs and rerun any task.
   create_user_if_missing "rbac_nonus_priv" "RBAC" "NonUSPriv" "rbac_nonus_priv@example.local"
   grant_user_role "rbac_nonus_priv" "AF_TRIGGER_SCOPE_GLOBAL"
+  grant_user_role "rbac_nonus_priv" "AF_RERUN_ALL_NO_TRIGGER"
 
-  # 4) US privileged: can trigger both US and global DAG sets.
+  # 4) US privileged: can trigger both US/global DAGs and rerun any task.
   create_user_if_missing "rbac_us_priv" "RBAC" "USPriv" "rbac_us_priv@example.local"
   grant_user_role "rbac_us_priv" "AF_TRIGGER_SCOPE_US"
   grant_user_role "rbac_us_priv" "AF_TRIGGER_SCOPE_GLOBAL"
+  grant_user_role "rbac_us_priv" "AF_RERUN_ALL_NO_TRIGGER"
 
   log "Done. Verify with: airflow users list -o plain"
 }

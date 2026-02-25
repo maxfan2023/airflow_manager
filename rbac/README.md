@@ -22,9 +22,9 @@
 用户组合：
 
 - normal user: `Viewer` + `AF_RERUN_ALL_NO_TRIGGER`
-- US users: `Viewer` + `AF_TRIGGER_SCOPE_US`
-- non-US privileged: `Viewer` + `AF_TRIGGER_SCOPE_GLOBAL`
-- US privileged: `Viewer` + `AF_TRIGGER_SCOPE_US` + `AF_TRIGGER_SCOPE_GLOBAL`
+- US users: `Viewer` + `AF_TRIGGER_SCOPE_US` + `AF_RERUN_ALL_NO_TRIGGER`
+- non-US privileged: `Viewer` + `AF_TRIGGER_SCOPE_GLOBAL` + `AF_RERUN_ALL_NO_TRIGGER`
+- US privileged: `Viewer` + `AF_TRIGGER_SCOPE_US` + `AF_TRIGGER_SCOPE_GLOBAL` + `AF_RERUN_ALL_NO_TRIGGER`
 
 ## 3) 核心实现
 
@@ -97,7 +97,7 @@ airflow sync-perm --include-dags
 ./rbac/create_test_users.sh \
   --env dev \
   --config /home/max/development/airflow/conf/airflow-manager-dev.conf \
-  --password 'ChangeMe_123!'
+  --password-file /home/max/development/airflow/.secrets/rbac_test_user_password.txt
 ```
 
 核验：
