@@ -1,5 +1,5 @@
-# Deprecated in folder-based RBAC mode.
+# Deprecated in tag-based RBAC mode.
 #
 # This file was used by the old "scan DAG IDs and assign permissions" approach.
-# New approach uses airflow_local_settings.py + dags/<scope>/ folder layout.
+# New approach uses airflow_local_settings.py + DAG classification tags.
 # Keep only as migration history.

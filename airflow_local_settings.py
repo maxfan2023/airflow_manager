@@ -1,16 +1,16 @@
-"""Folder-based DAG scope policy for Airflow FAB RBAC.
+"""Tag-based DAG scope policy for Airflow FAB RBAC.
 
 Place this file at AIRFLOW_HOME/airflow_local_settings.py.
 The scheduler imports dag_policy() for every DAG and injects DAG-level ACLs.
 
-Folder convention:
-  dags/us/...      -> AF_TRIGGER_SCOPE_US
-  dags/global/...  -> AF_TRIGGER_SCOPE_GLOBAL
-  dags/mx/...      -> AF_TRIGGER_SCOPE_MX
-  dags/cn/...      -> AF_TRIGGER_SCOPE_CN
+Tag convention (default):
+  GDTET_US_DAG      -> AF_TRIGGER_SCOPE_US
+  GDTET_GLOBAL_DAG  -> AF_TRIGGER_SCOPE_GLOBAL
 
-Compatibility alias:
-  dags/globle/...  -> treated as global
+Future extension:
+  Add more entries to DEFAULT_DAG_TAG_TO_SCOPE
+  or configure AIRFLOW_RBAC_DAG_TAG_SCOPE_MAP, e.g.
+  "GDTET_US_DAG=us,GDTET_GLOBAL_DAG=global,GDTET_MX_DAG=mx"
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ import os
 from pathlib import Path
 from typing import Dict
 from typing import Iterable
-from typing import Optional
 from typing import Set
 
 from airflow.exceptions import AirflowClusterPolicyViolation
@@ -35,23 +34,52 @@ SCOPE_TO_TRIGGER_ROLE = {
     "cn": "AF_TRIGGER_SCOPE_CN",
 }
 
-# Optional folder aliases. Keep "globle" for compatibility with existing naming.
-SCOPE_ALIASES = {
-    "global": "global",
-    "globle": "global",
-    "us": "us",
-    "mx": "mx",
-    "cn": "cn",
+DEFAULT_DAG_TAG_TO_SCOPE = {
+    "GDTET_GLOBAL_DAG": "global",
+    "GDTET_US_DAG": "us",
 }
 
+
+def _load_dag_tag_to_scope() -> Dict[str, str]:
+    raw = os.environ.get("AIRFLOW_RBAC_DAG_TAG_SCOPE_MAP", "").strip()
+    if not raw:
+        return dict(DEFAULT_DAG_TAG_TO_SCOPE)
+
+    parsed: Dict[str, str] = {}
+    for entry in raw.split(","):
+        item = entry.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            LOG.warning(
+                "Ignore invalid AIRFLOW_RBAC_DAG_TAG_SCOPE_MAP item (missing '='): %s",
+                item,
+            )
+            continue
+        tag, scope = item.split("=", 1)
+        normalized_tag = tag.strip()
+        normalized_scope = scope.strip().lower()
+        if not normalized_tag or not normalized_scope:
+            LOG.warning(
+                "Ignore invalid AIRFLOW_RBAC_DAG_TAG_SCOPE_MAP item (empty tag/scope): %s",
+                item,
+            )
+            continue
+        parsed[normalized_tag] = normalized_scope
+
+    if not parsed:
+        LOG.warning(
+            "AIRFLOW_RBAC_DAG_TAG_SCOPE_MAP is set but no valid mapping parsed; "
+            "fallback to defaults."
+        )
+        return dict(DEFAULT_DAG_TAG_TO_SCOPE)
+
+    return parsed
+
+
+DAG_TAG_TO_SCOPE = _load_dag_tag_to_scope()
 MANAGED_TRIGGER_ROLES = set(SCOPE_TO_TRIGGER_ROLE.values())
 TRIGGER_DAG_PERMISSIONS = {"can_edit"}
-
-
-def _truthy(value: Optional[str], default: bool = False) -> bool:
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _resolve_dags_root() -> Path:
@@ -70,16 +98,6 @@ def _resolve_dags_root() -> Path:
     return (Path(__file__).resolve().parent / "dags").resolve()
 
 
-def _default_scope() -> str:
-    # Unknown/unclassified DAGs fall back to this scope when strict mode is off.
-    configured = os.environ.get("AIRFLOW_RBAC_DEFAULT_SCOPE", "global").strip().lower()
-    return SCOPE_ALIASES.get(configured, configured)
-
-
-def _strict_scope_enforcement() -> bool:
-    return _truthy(os.environ.get("AIRFLOW_RBAC_SCOPE_STRICT"), default=False)
-
-
 def _normalize_permissions(perms: object) -> Set[str]:
     if perms is None:
         return set()
@@ -90,51 +108,60 @@ def _normalize_permissions(perms: object) -> Set[str]:
     return set()
 
 
-def _scope_from_file(fileloc: str) -> Optional[str]:
+def _is_dag_under_managed_root(fileloc: str) -> bool:
     dags_root = _resolve_dags_root()
     dag_file = Path(fileloc).resolve()
 
     try:
-        relative = dag_file.relative_to(dags_root)
+        dag_file.relative_to(dags_root)
     except ValueError:
         # Not under configured dags root (for example packaged example DAGs).
-        # Leave access_control unchanged.
-        return None
+        return False
+    return True
 
-    strict = _strict_scope_enforcement()
-    default_scope = _default_scope()
 
-    # Expect folder layout: dags/<scope>/<dag_file.py>
-    if len(relative.parts) < 2:
-        if strict:
-            raise AirflowClusterPolicyViolation(
-                f"DAG must be in scope folder under {dags_root}; got {dag_file}"
-            )
-        LOG.warning(
-            "DAG file %s is not in dags/<scope>/... layout; fallback scope=%s",
-            dag_file,
-            default_scope,
-        )
-        return default_scope
+def _extract_dag_tags(dag) -> Set[str]:
+    raw_tags = getattr(dag, "tags", None)
+    if raw_tags is None:
+        return set()
+    if isinstance(raw_tags, str):
+        normalized = raw_tags.strip()
+        return {normalized} if normalized else set()
+    if isinstance(raw_tags, Iterable):
+        tags: Set[str] = set()
+        for tag in raw_tags:
+            normalized = str(tag).strip()
+            if normalized:
+                tags.add(normalized)
+        return tags
+    return set()
 
-    raw_scope = relative.parts[0].strip().lower()
-    scope = SCOPE_ALIASES.get(raw_scope, raw_scope)
 
-    if scope in SCOPE_TO_TRIGGER_ROLE:
-        return scope
+def _scope_from_tags(dag) -> str:
+    tags = _extract_dag_tags(dag)
 
-    if strict:
+    matched_scopes: Set[str] = set()
+    matched_tags: Set[str] = set()
+    for tag, scope in DAG_TAG_TO_SCOPE.items():
+        if tag in tags:
+            matched_tags.add(tag)
+            matched_scopes.add(scope)
+
+    if len(matched_scopes) == 1:
+        return next(iter(matched_scopes))
+
+    if len(matched_scopes) > 1:
         raise AirflowClusterPolicyViolation(
-            f"Unsupported DAG scope folder '{raw_scope}' for DAG file {dag_file}"
+            "DAG "
+            f"'{getattr(dag, 'dag_id', '<unknown>')}' has conflicting classification tags "
+            f"{sorted(matched_tags)}; expected exactly one classification tag."
         )
 
-    LOG.warning(
-        "Unsupported DAG scope folder '%s' for %s; fallback scope=%s",
-        raw_scope,
-        dag_file,
-        default_scope,
+    raise AirflowClusterPolicyViolation(
+        "DAG "
+        f"'{getattr(dag, 'dag_id', '<unknown>')}' is missing required classification tag. "
+        f"Expected one of {sorted(DAG_TAG_TO_SCOPE.keys())}, got tags={sorted(tags)}"
     )
-    return default_scope
 
 
 def _merge_managed_acl(existing_acl: object, target_role: str) -> Dict[str, Set[str]]:
@@ -152,12 +179,12 @@ def _merge_managed_acl(existing_acl: object, target_role: str) -> Dict[str, Set[
 
 
 def dag_policy(dag) -> None:
-    """Inject DAG-level ACL from folder scope for trigger role control."""
+    """Inject DAG-level ACL from classification tags for trigger role control."""
 
-    scope = _scope_from_file(dag.fileloc)
-    if scope is None:
+    if not _is_dag_under_managed_root(dag.fileloc):
         return
 
+    scope = _scope_from_tags(dag)
     target_role = SCOPE_TO_TRIGGER_ROLE.get(scope)
     if not target_role:
         raise AirflowClusterPolicyViolation(

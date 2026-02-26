@@ -49,7 +49,7 @@ with DAG(
     schedule=None,
     catchup=False,
     default_args={"owner": RUN_USER, "retries": 0},
-    tags=["spark", "pyspark", "smoke-test"],
+    tags=["spark", "pyspark", "smoke-test", "GDTET_GLOBAL_DAG"],
 ) as dag:
     create_hive_test_table = SparkSubmitOperator(
         task_id="create_hive_test_table",

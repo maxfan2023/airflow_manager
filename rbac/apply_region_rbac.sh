@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This script initializes RBAC roles for folder-based DAG scope control.
+# This script initializes RBAC roles for tag-based DAG scope control.
 # It no longer assigns DAG:<dag_id> permissions directly.
 # DAG-level grants are delegated to airflow_local_settings.py dag_policy.
 if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
@@ -29,7 +29,7 @@ Usage:
 Options:
   -e, --env <dev|uat|prod>    Select environment config (default: dev)
   -c, --config <path>         Path to airflow-manager config file
-  -s, --scopes <csv>          Scope folders to manage (default: global,us)
+  -s, --scopes <csv>          Scopes to manage (default: global,us)
   -n, --dry-run               Print commands only
   -h, --help                  Show this help
 
@@ -178,7 +178,7 @@ normalize_scopes() {
     [[ -n "$scope" ]] && SCOPE_SET["$scope"]=1
   done
 
-  # Always include global scope so DAGs in dags/global are consistently supported.
+  # Always include global scope so global-tagged DAGs are consistently supported.
   SCOPE_SET["global"]=1
 
   [[ "${#SCOPE_SET[@]}" -gt 0 ]] || die "No valid scopes parsed from --scopes."
@@ -253,7 +253,7 @@ Setup complete.
 
 Next required step:
   1) Put airflow_local_settings.py into AIRFLOW_HOME.
-  2) Organize DAG files by folders under dags/, e.g. dags/us, dags/global, dags/mx.
+  2) Add exactly one classification tag per DAG (for example GDTET_US_DAG / GDTET_GLOBAL_DAG).
   3) Restart scheduler/webserver and run airflow sync-perm.
 
 User-role examples:
@@ -278,7 +278,7 @@ main() {
   check_prereqs
   normalize_scopes
 
-  log "Initializing folder-based RBAC roles for scopes: $(IFS=','; echo "${!SCOPE_SET[*]}")"
+  log "Initializing tag-based RBAC roles for scopes: $(IFS=','; echo "${!SCOPE_SET[*]}")"
   sync_permissions
   configure_roles
   sync_permissions

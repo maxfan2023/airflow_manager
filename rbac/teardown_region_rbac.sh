@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Remove folder-based RBAC test users/roles safely and idempotently.
+# Remove tag-based RBAC test users/roles safely and idempotently.
 # This script is the rollback companion for apply_region_rbac.sh + create_test_users.sh.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,7 +46,7 @@ Behavior:
   1) Delete RBAC test users (if present).
   2) Delete custom RBAC roles (if present).
   3) Sync permissions.
-  4) Optionally disable folder-based dag_policy file.
+  4) Optionally disable tag-based dag_policy file.
 
 Examples:
   ./rbac/teardown_region_rbac.sh --env dev --config /home/max/development/airflow/conf/airflow-manager-dev.conf

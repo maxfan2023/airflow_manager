@@ -194,7 +194,7 @@ with DAG(
     schedule=None,
     catchup=False,
     default_args={"owner": RUN_USER, "retries": 0},
-    tags=["hive", "smoke-test"],
+    tags=["hive", "smoke-test", "GDTET_GLOBAL_DAG"],
 ) as dag:
     kinit_env = {
         "RUN_USER": RUN_USER,
