@@ -42,6 +42,11 @@ DEFAULT_DAG_TAG_TO_SCOPE = {
 
 
 def _load_dag_tag_to_scope() -> Dict[str, str]:
+    """Load the classification-tag mapping from env var with safe fallback.
+
+    Expected format:
+      AIRFLOW_RBAC_DAG_TAG_SCOPE_MAP="TAG_A=scope_a,TAG_B=scope_b"
+    """
     raw = os.environ.get("AIRFLOW_RBAC_DAG_TAG_SCOPE_MAP", "").strip()
     if not raw:
         return dict(DEFAULT_DAG_TAG_TO_SCOPE)
@@ -99,6 +104,11 @@ TRIGGER_DAG_RESOURCE_ACTIONS = {
 
 
 def _resolve_dags_root() -> Path:
+    """Resolve the managed DAG root used by this policy.
+
+    Only DAGs under this root will be managed by tag-based RBAC. This avoids
+    changing ACLs of non-project DAGs (for example bundled sample DAGs).
+    """
     # Priority:
     # 1) AIRFLOW_RBAC_DAGS_ROOT
     # 2) AIRFLOW__CORE__DAGS_FOLDER
@@ -115,6 +125,11 @@ def _resolve_dags_root() -> Path:
 
 
 def _normalize_permissions(perms: object) -> Set[str]:
+    """Normalize ACL action values into a set of strings.
+
+    Airflow/FAB ACL values can appear as string/list/set/tuple depending on
+    caller style and version. This helper keeps downstream logic simple.
+    """
     if perms is None:
         return set()
     if isinstance(perms, str):
@@ -125,6 +140,7 @@ def _normalize_permissions(perms: object) -> Set[str]:
 
 
 def _is_dag_under_managed_root(fileloc: str) -> bool:
+    """Return True when DAG file location belongs to the managed DAG root."""
     dags_root = _resolve_dags_root()
     dag_file = Path(fileloc).resolve()
 
@@ -137,6 +153,7 @@ def _is_dag_under_managed_root(fileloc: str) -> bool:
 
 
 def _extract_dag_tags(dag) -> Set[str]:
+    """Extract and normalize DAG tags from different runtime representations."""
     raw_tags = getattr(dag, "tags", None)
     if raw_tags is None:
         return set()
@@ -154,6 +171,13 @@ def _extract_dag_tags(dag) -> Set[str]:
 
 
 def _scope_from_tags(dag) -> str:
+    """Resolve one and only one scope from DAG tags.
+
+    Rules:
+    - exactly one classification scope matched -> valid
+    - multiple classification scopes matched   -> invalid (conflict)
+    - zero classification scopes matched       -> invalid (missing tag)
+    """
     tags = _extract_dag_tags(dag)
 
     matched_scopes: Set[str] = set()
@@ -182,6 +206,7 @@ def _scope_from_tags(dag) -> str:
 
 def _normalize_resource_action_map(perms: Any) -> Dict[str, Set[str]]:
     # Support both old-style ACL sets and new-style resource->actions dict.
+    # Old style (set/list of actions) is interpreted as DAG resource actions.
     if isinstance(perms, dict):
         normalized: Dict[str, Set[str]] = {}
         for resource_name, actions in perms.items():
@@ -200,6 +225,15 @@ def _normalize_resource_action_map(perms: Any) -> Dict[str, Set[str]]:
 
 
 def _merge_managed_acl(existing_acl: object, target_role: str) -> Dict[str, Dict[str, Set[str]]]:
+    """Merge existing ACL while enforcing exactly one managed trigger role.
+
+    Important behavior:
+    - Keep non-managed roles untouched to avoid breaking business ACLs.
+    - Replace all managed scope roles with exactly one target role derived
+      from classification tag.
+    - Add both DAG and DAG Runs resource actions for target role so Airflow's
+      periodic permission reconciliation will not revoke trigger grants.
+    """
     merged: Dict[str, Dict[str, Set[str]]] = {}
 
     if isinstance(existing_acl, dict):
@@ -220,7 +254,12 @@ def _merge_managed_acl(existing_acl: object, target_role: str) -> Dict[str, Dict
 
 
 def dag_policy(dag) -> None:
-    """Inject DAG-level ACL from classification tags for trigger role control."""
+    """Airflow cluster policy hook executed for every parsed DAG.
+
+    This function translates classification tags into deterministic DAG ACLs.
+    Any DAG that is missing/invalid tags raises AirflowClusterPolicyViolation,
+    which keeps it out of normal DAG listing/trigger flow.
+    """
 
     if not _is_dag_under_managed_root(dag.fileloc):
         return
