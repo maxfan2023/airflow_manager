@@ -44,7 +44,9 @@
 - `airflow_local_settings.py`
   - 在 `dag_policy` 中基于 DAG `tags` 自动设置 `dag.access_control`
   - 每个 DAG 只保留一个受管 trigger role
-  - 自动注入 `DAG:<dag_id>.can_edit`
+  - 自动注入：
+    - `DAG:<dag_id>.can_edit`
+    - `DAG Run:<dag_id>.can_create`（通过 `DAG Runs: can_create` 资源映射）
   - 默认分类 tag 映射：
     - `GDTET_US_DAG=us`
     - `GDTET_GLOBAL_DAG=global`
@@ -119,6 +121,8 @@ python rbac/sync_scope_dag_run_perms.py --scopes global,us,mx,cn
 ```
 
 说明：`sync-perm` 可能清理 `DAG Run:<dag_id>.can_create`，因此需要紧跟一次 `sync_scope_dag_run_perms.py`。
+如果你使用了本仓库最新 `airflow_local_settings.py`（已在 `dag_policy` 中声明 `DAG Runs: can_create`），
+调度器的 DAG 权限同步会自动保持按 DAG 的 trigger 授权，不会在几秒后被回收。
 
 ## 5) 生成 5 个测试 DAG（你要求的场景）
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Any
 from typing import Dict
 from typing import Iterable
 from typing import Set
@@ -79,7 +80,22 @@ def _load_dag_tag_to_scope() -> Dict[str, str]:
 
 DAG_TAG_TO_SCOPE = _load_dag_tag_to_scope()
 MANAGED_TRIGGER_ROLES = set(SCOPE_TO_TRIGGER_ROLE.values())
-TRIGGER_DAG_PERMISSIONS = {"can_edit"}
+RESOURCE_DAG = "DAGs"
+RESOURCE_DAG_RUN = "DAG Runs"
+ACTION_CAN_EDIT = "can_edit"
+ACTION_CAN_CREATE = "can_create"
+
+# Keep one scope role per DAG with:
+# - DAGs.can_edit (required by trigger endpoint DAG-level PUT check)
+# - DAG Runs.can_create (required by trigger endpoint RUN check)
+#
+# Airflow's sync_perm_for_dag periodically reconciles DAG ACLs and revokes stale
+# DAG-level permissions. If DAG Runs.can_create is not present in dag.access_control,
+# per-DAG trigger grants can disappear within seconds.
+TRIGGER_DAG_RESOURCE_ACTIONS = {
+    RESOURCE_DAG: {ACTION_CAN_EDIT},
+    RESOURCE_DAG_RUN: {ACTION_CAN_CREATE},
+}
 
 
 def _resolve_dags_root() -> Path:
@@ -164,17 +180,42 @@ def _scope_from_tags(dag) -> str:
     )
 
 
-def _merge_managed_acl(existing_acl: object, target_role: str) -> Dict[str, Set[str]]:
-    merged: Dict[str, Set[str]] = {}
+def _normalize_resource_action_map(perms: Any) -> Dict[str, Set[str]]:
+    # Support both old-style ACL sets and new-style resource->actions dict.
+    if isinstance(perms, dict):
+        normalized: Dict[str, Set[str]] = {}
+        for resource_name, actions in perms.items():
+            resource = str(resource_name).strip()
+            if not resource:
+                continue
+            normalized_actions = _normalize_permissions(actions)
+            if normalized_actions:
+                normalized[resource] = normalized_actions
+        return normalized
+
+    normalized_actions = _normalize_permissions(perms)
+    if not normalized_actions:
+        return {}
+    return {RESOURCE_DAG: normalized_actions}
+
+
+def _merge_managed_acl(existing_acl: object, target_role: str) -> Dict[str, Dict[str, Set[str]]]:
+    merged: Dict[str, Dict[str, Set[str]]] = {}
 
     if isinstance(existing_acl, dict):
         for role_name, perms in existing_acl.items():
-            if role_name in MANAGED_TRIGGER_ROLES:
+            role = str(role_name)
+            if role in MANAGED_TRIGGER_ROLES:
                 continue
-            merged[str(role_name)] = _normalize_permissions(perms)
+            normalized_perms = _normalize_resource_action_map(perms)
+            if normalized_perms:
+                merged[role] = normalized_perms
 
     # Exactly one managed trigger role per DAG to avoid accidental cross-scope trigger.
-    merged[target_role] = set(TRIGGER_DAG_PERMISSIONS)
+    merged[target_role] = {
+        resource_name: set(actions)
+        for resource_name, actions in TRIGGER_DAG_RESOURCE_ACTIONS.items()
+    }
     return merged
 
 
