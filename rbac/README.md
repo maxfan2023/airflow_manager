@@ -21,22 +21,30 @@
 - `AF_TRIGGER_SCOPE_GLOBAL`
 - `AF_TRIGGER_SCOPE_US`
 - 预留：`AF_TRIGGER_SCOPE_MX`、`AF_TRIGGER_SCOPE_CN`
+- `rbac/sync_scope_dag_run_perms.py`
+  - 基于 DAG 分类 tag 同步 `DAG Run:<dag_id>.can_create` 到 `AF_TRIGGER_SCOPE_*`
+  - 作为 `sync-perm` 之后的最后一步执行
 
 用户组合：
 
 - normal user: `Viewer` + `AF_RERUN_ALL_NO_TRIGGER`
-- US users: `Viewer` + `AF_TRIGGER_SCOPE_US` + `AF_RERUN_ALL_NO_TRIGGER`
-- non-US privileged: `Viewer` + `AF_TRIGGER_SCOPE_GLOBAL` + `AF_RERUN_ALL_NO_TRIGGER`
-- US privileged: `Viewer` + `AF_TRIGGER_SCOPE_US` + `AF_TRIGGER_SCOPE_GLOBAL` + `AF_RERUN_ALL_NO_TRIGGER`
+- US users: `Viewer` + `AF_RERUN_ALL_NO_TRIGGER` + `AF_TRIGGER_SCOPE_US`
+- non-US privileged: `Viewer` + `AF_RERUN_ALL_NO_TRIGGER` + `AF_TRIGGER_SCOPE_GLOBAL`
+- US privileged: `Viewer` + `AF_RERUN_ALL_NO_TRIGGER` + `AF_TRIGGER_SCOPE_US` + `AF_TRIGGER_SCOPE_GLOBAL`
+
+注意：不要手工给 `AF_TRIGGER_SCOPE_*` 增加全局 `DAG Runs.can_create`，否则会绕过 scope trigger 隔离。
 
 ## 3) 核心实现
 
 - `rbac/apply_region_rbac.sh`
-  - 只初始化角色和基础权限
+  - 初始化角色和基础权限
+  - 清理旧的全局 `DAG Runs.can_create`（防止 scope 触发隔离被绕过）
+  - 最后一步按 tag 同步 `DAG Run:<dag_id>.can_create`
   - 不再写 `DAG:<dag_id>` 授权
 - `airflow_local_settings.py`
   - 在 `dag_policy` 中基于 DAG `tags` 自动设置 `dag.access_control`
   - 每个 DAG 只保留一个受管 trigger role
+  - 自动注入 `DAG:<dag_id>.can_edit`
   - 默认分类 tag 映射：
     - `GDTET_US_DAG=us`
     - `GDTET_GLOBAL_DAG=global`
@@ -107,7 +115,10 @@ with DAG(
 ```bash
 ./airflow-manager.sh dev restart all-services
 airflow sync-perm --include-dags
+python rbac/sync_scope_dag_run_perms.py --scopes global,us,mx,cn
 ```
+
+说明：`sync-perm` 可能清理 `DAG Run:<dag_id>.can_create`，因此需要紧跟一次 `sync_scope_dag_run_perms.py`。
 
 ## 5) 生成 5 个测试 DAG（你要求的场景）
 
@@ -115,14 +126,14 @@ airflow sync-perm --include-dags
 ./rbac/generate_tag_rbac_test_dags.sh
 ```
 
-默认输出目录：`dags/rbac_tag_tests/`
+默认基础目录：`${AIRFLOW_HOME}/dags`（若未设置 `AIRFLOW_HOME`，则使用仓库的 `dags/`）
 
 会生成 5 个文件：
 
-1. `rbac_tag_test_1_camp_us.py`：`source="camp-us"` -> `GDTET_US_DAG` -> `us_dag`
-2. `rbac_tag_test_2_mdm.py`：`source="mdm"` -> `GDTET_US_DAG` -> `us_dag`
-3. `rbac_tag_test_3_abc.py`：`source="abc"` -> `GDTET_GLOBAL_DAG` -> `global_dag`
-4. `rbac_tag_test_4_hub.py`：`source="hub"` -> `GDTET_GLOBAL_DAG` -> `global_dag`
+1. `camp_us/rbac_tag_test_1_camp_us.py`：`source="camp-us"` -> `GDTET_US_DAG` -> `us_dag`
+2. `mdm/rbac_tag_test_2_mdm.py`：`source="mdm"` -> `GDTET_US_DAG` -> `us_dag`
+3. `global/rbac_tag_test_3_abc.py`：`source="abc"` -> `GDTET_GLOBAL_DAG` -> `global_dag`
+4. `global/rbac_tag_test_4_hub.py`：`source="hub"` -> `GDTET_GLOBAL_DAG` -> `global_dag`
 5. `rbac_tag_test_5_no_source.py`：无 `source` 变量 -> 不打分类 tag -> 非法 DAG（不可触发、UI 不展示）
 
 说明：脚本中 `source` 到 tag 的规则为：
@@ -138,6 +149,16 @@ airflow sync-perm --include-dags
   --env dev \
   --config /home/max/development/airflow/conf/airflow-manager-dev.conf \
   --password-file /home/max/development/airflow/.secrets/rbac_test_user_password.txt
+```
+
+如需启用严格隔离模式（触发用户不带跨 DAG rerun）：
+
+```bash
+./rbac/create_test_users.sh \
+  --env dev \
+  --config /home/max/development/airflow/conf/airflow-manager-dev.conf \
+  --password-file /home/max/development/airflow/.secrets/rbac_test_user_password.txt \
+  --strict-trigger-isolation
 ```
 
 核验：
@@ -197,4 +218,6 @@ AUTH_ROLES_MAPPING = {
 ## 9) 重要边界
 
 `AF_RERUN_ALL_NO_TRIGGER` 依赖 `DAGs.can_edit`，会附带 pause/unpause 等编辑能力。  
+通过 `DAG Run:<dag_id>.can_create` 的按 DAG 授权，`AF_RERUN_ALL_NO_TRIGGER` 可以和 `AF_TRIGGER_SCOPE_*` 组合使用。  
+但如果额外给 `AF_TRIGGER_SCOPE_*` 赋了全局 `DAG Runs.can_create`，仍会导致跨 scope trigger。  
 如果要“只能 rerun、不能 pause”，需要自定义 Auth Manager 逻辑。

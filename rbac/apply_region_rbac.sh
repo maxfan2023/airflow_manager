@@ -2,7 +2,6 @@
 set -euo pipefail
 
 # This script initializes RBAC roles for tag-based DAG scope control.
-# It no longer assigns DAG:<dag_id> permissions directly.
 # DAG-level grants are delegated to airflow_local_settings.py dag_policy.
 if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
   echo "ERROR: apply_region_rbac.sh requires bash >= 4 (RHEL8 default is supported)." >&2
@@ -38,7 +37,9 @@ Behavior:
      - AF_RERUN_ALL_NO_TRIGGER
      - AF_TRIGGER_SCOPE_<SCOPE> for each scope in --scopes
   2) Grants baseline permissions required by each role.
-  3) Does NOT assign DAG:<dag_id> directly; dag_policy handles that.
+  3) Ensures AF_TRIGGER_SCOPE_* does NOT have global DAG Runs.can_create.
+  4) Syncs DAG Run:<dag_id>.can_create by DAG classification tags.
+  5) Does NOT assign DAG:<dag_id> directly; dag_policy handles that.
 USAGE
 }
 
@@ -210,6 +211,14 @@ grant_role_perm() {
   run_cmd airflow roles add-perms "$role" -a "$action" -r "$resource"
 }
 
+revoke_role_perm() {
+  local role="$1"
+  local action="$2"
+  local resource="$3"
+  # Idempotent: airflow returns success even when permission does not exist.
+  run_cmd airflow roles del-perms "$role" -a "$action" -r "$resource"
+}
+
 sync_permissions() {
   if airflow sync-perm --help 2>/dev/null | grep -q -- "--include-dags"; then
     run_cmd airflow sync-perm --include-dags
@@ -237,12 +246,27 @@ configure_roles() {
   grant_role_perm "$RERUN_ROLE" "can_edit" "Task Instances"
   grant_role_perm "$RERUN_ROLE" "can_delete" "Task Instances"
 
-  # Trigger scope roles: create DagRun permission.
-  # DAG:<dag_id>.can_edit is injected by dag_policy via dag.access_control.
+  # Trigger scope roles are created here.
+  # DAG-level grants are injected by dag_policy through dag.access_control.
+  # Explicitly remove legacy global trigger permission to avoid scope bypass.
   for scope in "${!SCOPE_SET[@]}"; do
     role="$(scope_role_name "$scope")"
-    grant_role_perm "$role" "can_create" "DAG Runs"
+    revoke_role_perm "$role" "can_create" "DAG Runs"
+    log "Prepared scoped trigger role: $role"
   done
+}
+
+sync_scoped_dag_run_permissions() {
+  local helper scopes_csv
+  helper="${SCRIPT_DIR}/sync_scope_dag_run_perms.py"
+  [[ -f "$helper" ]] || die "Helper script not found: $helper"
+
+  scopes_csv="$(IFS=','; echo "${!SCOPE_SET[*]}")"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    run_cmd python "$helper" --scopes "$scopes_csv" --dry-run
+  else
+    run_cmd python "$helper" --scopes "$scopes_csv"
+  fi
 }
 
 print_summary() {
@@ -254,13 +278,20 @@ Setup complete.
 Next required step:
   1) Put airflow_local_settings.py into AIRFLOW_HOME.
   2) Add exactly one classification tag per DAG (for example GDTET_US_DAG / GDTET_GLOBAL_DAG).
-  3) Restart scheduler/webserver and run airflow sync-perm.
+  3) Restart scheduler/webserver.
+  4) If you run airflow sync-perm manually later, run:
+     python rbac/sync_scope_dag_run_perms.py --scopes global,us
 
 User-role examples:
   - normal user: Viewer + AF_RERUN_ALL_NO_TRIGGER
-  - US user: Viewer + AF_TRIGGER_SCOPE_US + AF_RERUN_ALL_NO_TRIGGER
-  - non-US privileged: Viewer + AF_TRIGGER_SCOPE_GLOBAL + AF_RERUN_ALL_NO_TRIGGER
-  - US privileged: Viewer + AF_TRIGGER_SCOPE_GLOBAL + AF_TRIGGER_SCOPE_US + AF_RERUN_ALL_NO_TRIGGER
+  - US user: Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_US
+  - non-US privileged: Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_GLOBAL
+  - US privileged: Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_GLOBAL + AF_TRIGGER_SCOPE_US
+
+Important:
+  - Trigger isolation relies on per-DAG DAG Run:<dag_id>.can_create.
+  - Do not manually grant global DAG Runs.can_create to AF_TRIGGER_SCOPE_* roles,
+    otherwise scope isolation can be bypassed.
 EOT
 
   log "Managed scope roles created in this run:"
@@ -282,6 +313,8 @@ main() {
   sync_permissions
   configure_roles
   sync_permissions
+  # Keep this as the final step because sync-perm may revoke DAG Run:<dag_id> grants.
+  sync_scoped_dag_run_permissions
   print_summary
 }
 

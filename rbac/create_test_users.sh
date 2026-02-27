@@ -12,6 +12,8 @@ CONFIG_FILE=""
 PASSWORD=""
 PASSWORD_FILE=""
 DRY_RUN=false
+STRICT_TRIGGER_ISOLATION=false
+LEGACY_ROLE_COMBO_FLAG=false
 
 CONDA_ACTIVATED=false
 
@@ -37,14 +39,20 @@ Options:
   -c, --config <path>         Path to airflow-manager config file
   -p, --password <text>       Password for all test users
   -P, --password-file <path>  Read password from file (first line)
+  --strict-trigger-isolation  Trigger users do NOT get AF_RERUN_ALL_NO_TRIGGER
+  --legacy-role-combo         Deprecated alias; same as default behavior
   -n, --dry-run               Print commands only
   -h, --help                  Show this help
 
-Creates 4 local users for RBAC testing:
+Creates 4 local users for RBAC testing (default target matrix):
   rbac_normal      -> Viewer + AF_RERUN_ALL_NO_TRIGGER
-  rbac_us_user     -> Viewer + AF_TRIGGER_SCOPE_US + AF_RERUN_ALL_NO_TRIGGER
-  rbac_nonus_priv  -> Viewer + AF_TRIGGER_SCOPE_GLOBAL + AF_RERUN_ALL_NO_TRIGGER
-  rbac_us_priv     -> Viewer + AF_TRIGGER_SCOPE_US + AF_TRIGGER_SCOPE_GLOBAL + AF_RERUN_ALL_NO_TRIGGER
+  rbac_us_user     -> Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_US
+  rbac_nonus_priv  -> Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_GLOBAL
+  rbac_us_priv     -> Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_US + AF_TRIGGER_SCOPE_GLOBAL
+
+Note:
+  Scope isolation depends on DAG Run:<dag_id>.can_create grants managed by apply_region_rbac.sh.
+  Do not manually grant global DAG Runs.can_create to AF_TRIGGER_SCOPE_* roles.
 EOF
 }
 
@@ -97,6 +105,15 @@ parse_args() {
       -P|--password-file)
         PASSWORD_FILE="${2:-}"
         shift 2
+        ;;
+      --strict-trigger-isolation)
+        STRICT_TRIGGER_ISOLATION=true
+        shift
+        ;;
+      --legacy-role-combo)
+        LEGACY_ROLE_COMBO_FLAG=true
+        STRICT_TRIGGER_ISOLATION=false
+        shift
         ;;
       -n|--dry-run)
         DRY_RUN=true
@@ -330,33 +347,44 @@ main() {
   activate_conda_if_configured
   command -v airflow >/dev/null 2>&1 || die "airflow command not found in PATH."
 
+  if [[ "$STRICT_TRIGGER_ISOLATION" == "true" ]]; then
+    log "Strict trigger isolation is ON: trigger users will not get AF_RERUN_ALL_NO_TRIGGER."
+  else
+    log "Cross-DAG rerun is ON for trigger users: AF_RERUN_ALL_NO_TRIGGER will be assigned."
+  fi
+  if [[ "$LEGACY_ROLE_COMBO_FLAG" == "true" ]]; then
+    log "NOTE: --legacy-role-combo is deprecated and equals default behavior."
+  fi
+
   # 1) Normal user: can view + rerun, cannot trigger new DagRun.
   create_user_if_missing "rbac_normal" "RBAC" "Normal" "rbac_normal@example.local"
   reconcile_user_roles "rbac_normal" \
     "Viewer" \
     "AF_RERUN_ALL_NO_TRIGGER"
 
-  # 2) US user: can trigger US DAGs and rerun any task.
+  # 2) US user: trigger US DAGs only; optionally keep cross-DAG rerun.
+  local us_user_roles=("Viewer" "AF_TRIGGER_SCOPE_US" "AF_RERUN_ALL_NO_TRIGGER")
+  if [[ "$STRICT_TRIGGER_ISOLATION" == "true" ]]; then
+    us_user_roles=("Viewer" "AF_TRIGGER_SCOPE_US")
+  fi
   create_user_if_missing "rbac_us_user" "RBAC" "USUser" "rbac_us_user@example.local"
-  reconcile_user_roles "rbac_us_user" \
-    "Viewer" \
-    "AF_TRIGGER_SCOPE_US" \
-    "AF_RERUN_ALL_NO_TRIGGER"
+  reconcile_user_roles "rbac_us_user" "${us_user_roles[@]}"
 
-  # 3) Non-US privileged: can trigger global DAGs and rerun any task.
+  # 3) Non-US privileged: trigger global DAGs only; optionally keep cross-DAG rerun.
+  local nonus_priv_roles=("Viewer" "AF_TRIGGER_SCOPE_GLOBAL" "AF_RERUN_ALL_NO_TRIGGER")
+  if [[ "$STRICT_TRIGGER_ISOLATION" == "true" ]]; then
+    nonus_priv_roles=("Viewer" "AF_TRIGGER_SCOPE_GLOBAL")
+  fi
   create_user_if_missing "rbac_nonus_priv" "RBAC" "NonUSPriv" "rbac_nonus_priv@example.local"
-  reconcile_user_roles "rbac_nonus_priv" \
-    "Viewer" \
-    "AF_TRIGGER_SCOPE_GLOBAL" \
-    "AF_RERUN_ALL_NO_TRIGGER"
+  reconcile_user_roles "rbac_nonus_priv" "${nonus_priv_roles[@]}"
 
-  # 4) US privileged: can trigger both US/global DAGs and rerun any task.
+  # 4) US privileged: trigger both US/global DAGs; optionally keep cross-DAG rerun.
+  local us_priv_roles=("Viewer" "AF_TRIGGER_SCOPE_US" "AF_TRIGGER_SCOPE_GLOBAL" "AF_RERUN_ALL_NO_TRIGGER")
+  if [[ "$STRICT_TRIGGER_ISOLATION" == "true" ]]; then
+    us_priv_roles=("Viewer" "AF_TRIGGER_SCOPE_US" "AF_TRIGGER_SCOPE_GLOBAL")
+  fi
   create_user_if_missing "rbac_us_priv" "RBAC" "USPriv" "rbac_us_priv@example.local"
-  reconcile_user_roles "rbac_us_priv" \
-    "Viewer" \
-    "AF_TRIGGER_SCOPE_US" \
-    "AF_TRIGGER_SCOPE_GLOBAL" \
-    "AF_RERUN_ALL_NO_TRIGGER"
+  reconcile_user_roles "rbac_us_priv" "${us_priv_roles[@]}"
 
   log "Done. Verify with: airflow users list -o plain"
 }
