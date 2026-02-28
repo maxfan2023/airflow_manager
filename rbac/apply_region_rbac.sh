@@ -17,6 +17,7 @@ SCOPES_CSV="global,us"
 DRY_RUN=false
 
 RERUN_ROLE="AF_RERUN_ALL_NO_TRIGGER"
+ADMIN_OBSERVER_ROLE="AF_ADMIN_OBSERVER_NO_DAG"
 CONDA_ACTIVATED=false
 declare -A SCOPE_SET=()
 
@@ -36,6 +37,7 @@ Behavior:
   1) Creates/updates baseline roles:
      - AF_RERUN_ALL_NO_TRIGGER
      - AF_TRIGGER_SCOPE_<SCOPE> for each scope in --scopes
+     - AF_ADMIN_OBSERVER_NO_DAG
   2) Grants baseline permissions required by each role.
   3) Ensures AF_TRIGGER_SCOPE_* does NOT have global DAG Runs.can_create.
   4) Syncs DAG Run:<dag_id>.can_create by DAG classification tags.
@@ -232,6 +234,8 @@ configure_roles() {
 
   # Rerun-only capability role.
   create_role_if_missing "$RERUN_ROLE"
+  # Admin/security observer role that intentionally has no DAG access.
+  create_role_if_missing "$ADMIN_OBSERVER_ROLE"
 
   # Scope trigger roles. Example: AF_TRIGGER_SCOPE_GLOBAL, AF_TRIGGER_SCOPE_US
   for scope in "${!SCOPE_SET[@]}"; do
@@ -245,6 +249,49 @@ configure_roles() {
   grant_role_perm "$RERUN_ROLE" "can_edit" "DAG Runs"
   grant_role_perm "$RERUN_ROLE" "can_edit" "Task Instances"
   grant_role_perm "$RERUN_ROLE" "can_delete" "Task Instances"
+
+  # Admin observer role: can view Assets/Browse/Admin/Security menus, but no DAG operations.
+  # Airflow 3 UI derives menu visibility from concrete resources (for example
+  # Browse => Audit Logs/XComs/Required Actions, Security => List Users/List Roles).
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Browse"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Assets"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Assets"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Asset Aliases"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Asset Aliases"
+
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Admin"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Configurations"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Configurations"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Connections"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Connections"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Pools"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Pools"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Variables"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Variables"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Plugins"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Plugins"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Providers"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Providers"
+
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Audit Logs"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Audit Logs"
+
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "List Users"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Users"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Users"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "List Roles"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "Roles"
+  grant_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "Roles"
+
+  revoke_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "DAGs"
+  revoke_role_perm "$ADMIN_OBSERVER_ROLE" "menu_access" "DAG Runs"
+  revoke_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "DAGs"
+  revoke_role_perm "$ADMIN_OBSERVER_ROLE" "can_edit" "DAGs"
+  revoke_role_perm "$ADMIN_OBSERVER_ROLE" "can_delete" "DAGs"
+  revoke_role_perm "$ADMIN_OBSERVER_ROLE" "can_read" "DAG Runs"
+  revoke_role_perm "$ADMIN_OBSERVER_ROLE" "can_create" "DAG Runs"
+  revoke_role_perm "$ADMIN_OBSERVER_ROLE" "can_edit" "DAG Runs"
+  revoke_role_perm "$ADMIN_OBSERVER_ROLE" "can_delete" "DAG Runs"
 
   # Trigger scope roles are created here.
   # DAG-level grants are injected by dag_policy through dag.access_control.
@@ -287,6 +334,7 @@ User-role examples:
   - US user: Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_US
   - non-US privileged: Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_GLOBAL
   - US privileged: Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_GLOBAL + AF_TRIGGER_SCOPE_US
+  - admin observer (no DAG): AF_ADMIN_OBSERVER_NO_DAG
 
 Important:
   - Trigger isolation relies on per-DAG DAG Run:<dag_id>.can_create.

@@ -19,10 +19,12 @@ TEST_USERS=(
   "rbac_us_user"
   "rbac_nonus_priv"
   "rbac_us_priv"
+  "rbac_admin_observer"
 )
 
 CUSTOM_ROLES=(
   "AF_RERUN_ALL_NO_TRIGGER"
+  "AF_ADMIN_OBSERVER_NO_DAG"
   "AF_TRIGGER_SCOPE_GLOBAL"
   "AF_TRIGGER_SCOPE_NONUS"
   "AF_TRIGGER_SCOPE_US"

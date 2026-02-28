@@ -21,6 +21,15 @@
 - `AF_TRIGGER_SCOPE_GLOBAL`
 - `AF_TRIGGER_SCOPE_US`
 - 预留：`AF_TRIGGER_SCOPE_MX`、`AF_TRIGGER_SCOPE_CN`
+- `AF_ADMIN_OBSERVER_NO_DAG`
+  - 用于“管理面只读观察”场景
+  - 可见 `Assets`/`Browse`/`Admin`/`Security` 菜单
+  - 不授予 `DAGs`/`DAG Runs` 读写菜单权限
+  - Airflow 3.1.6 菜单映射：
+    - `Security` 依赖 `List Users` / `List Roles` 的 `menu_access`
+    - `Browse` 依赖 `Audit Logs` / `XComs` / `Required Actions` 之一
+  - 在 Airflow 3.1.6 新 UI 中，`Dags` 图标可能仍显示为禁用入口（由前端固定渲染），
+    但没有 `DAGs` / `DAG Runs` 权限时不可读取或操作 DAG
 - `rbac/sync_scope_dag_run_perms.py`
   - 基于 DAG 分类 tag 同步 `DAG Run:<dag_id>.can_create` 到 `AF_TRIGGER_SCOPE_*`
   - 作为 `sync-perm` 之后的最后一步执行
@@ -31,6 +40,7 @@
 - US users: `Viewer` + `AF_RERUN_ALL_NO_TRIGGER` + `AF_TRIGGER_SCOPE_US`
 - non-US privileged: `Viewer` + `AF_RERUN_ALL_NO_TRIGGER` + `AF_TRIGGER_SCOPE_GLOBAL`
 - US privileged: `Viewer` + `AF_RERUN_ALL_NO_TRIGGER` + `AF_TRIGGER_SCOPE_US` + `AF_TRIGGER_SCOPE_GLOBAL`
+- admin observer(no DAG): `AF_ADMIN_OBSERVER_NO_DAG`
 
 注意：不要手工给 `AF_TRIGGER_SCOPE_*` 增加全局 `DAG Runs.can_create`，否则会绕过 scope trigger 隔离。
 
@@ -169,7 +179,7 @@ python rbac/sync_scope_dag_run_perms.py --scopes global,us,mx,cn
 
 ```bash
 airflow roles list -o plain
-airflow roles list -p -o plain | grep -E 'AF_RERUN_ALL_NO_TRIGGER|AF_TRIGGER_SCOPE_'
+airflow roles list -p -o plain | grep -E 'AF_RERUN_ALL_NO_TRIGGER|AF_ADMIN_OBSERVER_NO_DAG|AF_TRIGGER_SCOPE_'
 airflow users list -o plain
 ```
 
@@ -177,8 +187,8 @@ airflow users list -o plain
 
 默认删除以下对象（存在才删）：
 
-- users: `rbac_normal`、`rbac_us_user`、`rbac_nonus_priv`、`rbac_us_priv`
-- roles: `AF_RERUN_ALL_NO_TRIGGER`、`AF_TRIGGER_SCOPE_GLOBAL`、`AF_TRIGGER_SCOPE_NONUS`（兼容旧命名）、`AF_TRIGGER_SCOPE_US`、`AF_TRIGGER_SCOPE_MX`、`AF_TRIGGER_SCOPE_CN`
+- users: `rbac_normal`、`rbac_us_user`、`rbac_nonus_priv`、`rbac_us_priv`、`rbac_admin_observer`
+- roles: `AF_RERUN_ALL_NO_TRIGGER`、`AF_ADMIN_OBSERVER_NO_DAG`、`AF_TRIGGER_SCOPE_GLOBAL`、`AF_TRIGGER_SCOPE_NONUS`（兼容旧命名）、`AF_TRIGGER_SCOPE_US`、`AF_TRIGGER_SCOPE_MX`、`AF_TRIGGER_SCOPE_CN`
 
 ```bash
 ./rbac/teardown_region_rbac.sh \
@@ -201,6 +211,7 @@ airflow users list -o plain
 
 - `AD_AF_VIEWER` -> `Viewer`
 - `AD_AF_RERUN_ALL_NO_TRIGGER` -> `AF_RERUN_ALL_NO_TRIGGER`
+- `AD_AF_ADMIN_OBSERVER_NO_DAG` -> `AF_ADMIN_OBSERVER_NO_DAG`
 - `AD_AF_TRIGGER_SCOPE_GLOBAL` -> `AF_TRIGGER_SCOPE_GLOBAL`
 - `AD_AF_TRIGGER_SCOPE_US` -> `AF_TRIGGER_SCOPE_US`
 - `AD_AF_TRIGGER_SCOPE_MX` -> `AF_TRIGGER_SCOPE_MX`
@@ -214,6 +225,7 @@ AUTH_LDAP_GROUP_FIELD = "memberOf"
 AUTH_ROLES_MAPPING = {
     "CN=AD_AF_VIEWER,OU=Groups,DC=corp,DC=example,DC=com": ["Viewer"],
     "CN=AD_AF_RERUN_ALL_NO_TRIGGER,OU=Groups,DC=corp,DC=example,DC=com": ["AF_RERUN_ALL_NO_TRIGGER"],
+    "CN=AD_AF_ADMIN_OBSERVER_NO_DAG,OU=Groups,DC=corp,DC=example,DC=com": ["AF_ADMIN_OBSERVER_NO_DAG"],
     "CN=AD_AF_TRIGGER_SCOPE_GLOBAL,OU=Groups,DC=corp,DC=example,DC=com": ["AF_TRIGGER_SCOPE_GLOBAL"],
     "CN=AD_AF_TRIGGER_SCOPE_US,OU=Groups,DC=corp,DC=example,DC=com": ["AF_TRIGGER_SCOPE_US"],
 }

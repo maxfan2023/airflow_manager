@@ -22,6 +22,7 @@ CONDA_ACTIVATED=false
 MANAGED_TEST_ROLES=(
   "Viewer"
   "AF_RERUN_ALL_NO_TRIGGER"
+  "AF_ADMIN_OBSERVER_NO_DAG"
   "AF_TRIGGER_SCOPE_GLOBAL"
   "AF_TRIGGER_SCOPE_NONUS"
   "AF_TRIGGER_SCOPE_US"
@@ -44,11 +45,12 @@ Options:
   -n, --dry-run               Print commands only
   -h, --help                  Show this help
 
-Creates 4 local users for RBAC testing (default target matrix):
+Creates 5 local users for RBAC testing (default target matrix):
   rbac_normal      -> Viewer + AF_RERUN_ALL_NO_TRIGGER
   rbac_us_user     -> Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_US
   rbac_nonus_priv  -> Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_GLOBAL
   rbac_us_priv     -> Viewer + AF_RERUN_ALL_NO_TRIGGER + AF_TRIGGER_SCOPE_US + AF_TRIGGER_SCOPE_GLOBAL
+  rbac_admin_observer -> AF_ADMIN_OBSERVER_NO_DAG (assets/browse/admin/security; DAG entry may appear disabled in UI)
 
 Note:
   Scope isolation depends on DAG Run:<dag_id>.can_create grants managed by apply_region_rbac.sh.
@@ -385,6 +387,11 @@ main() {
   fi
   create_user_if_missing "rbac_us_priv" "RBAC" "USPriv" "rbac_us_priv@example.local"
   reconcile_user_roles "rbac_us_priv" "${us_priv_roles[@]}"
+
+  # 5) Admin observer: can view Assets/Browse/Admin/Security, but no DAG read/write ops.
+  # In Airflow 3 UI, the Dags icon can still be rendered as a disabled entry.
+  create_user_if_missing "rbac_admin_observer" "RBAC" "AdminObserver" "rbac_admin_observer@example.local"
+  reconcile_user_roles "rbac_admin_observer" "AF_ADMIN_OBSERVER_NO_DAG"
 
   log "Done. Verify with: airflow users list -o plain"
 }
