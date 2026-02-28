@@ -61,6 +61,13 @@ zlib
 bzip2
 xz
 sqlite
+gcc_linux-64
+gxx_linux-64
+binutils_linux-64
+make
+libgcc-ng
+libstdcxx-ng
+python-ldap
 python-gssapi
 pykerberos
 EOF
@@ -85,6 +92,15 @@ fi
 TARGET_ENV="${1:-airflow312}"
 CONDA_BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_EXPLICIT="${CONDA_BUNDLE_DIR}/explicit-linux-64.txt"
+INSTALL_TOOLCHAIN="${INSTALL_TOOLCHAIN:-1}"
+TOOLCHAIN_PKGS=(
+  gcc_linux-64
+  gxx_linux-64
+  binutils_linux-64
+  make
+  libgcc-ng
+  libstdcxx-ng
+)
 
 if [[ ! -f "${SRC_EXPLICIT}" ]]; then
   echo "ERROR: explicit-linux-64.txt not found in ${CONDA_BUNDLE_DIR}" >&2
@@ -100,6 +116,30 @@ sed \
   "${SRC_EXPLICIT}" >"${TMP_EXPLICIT}"
 
 CONDA_SUBDIR=linux-64 conda create -y --offline -n "${TARGET_ENV}" --file "${TMP_EXPLICIT}"
+if [[ "${INSTALL_TOOLCHAIN}" == "1" ]]; then
+  missing_pkgs=()
+  for pkg in "${TOOLCHAIN_PKGS[@]}"; do
+    if ! conda list -n "${TARGET_ENV}" | awk '{print $1}' | grep -qx "${pkg}"; then
+      missing_pkgs+=("${pkg}")
+    fi
+  done
+
+  if [[ "${#missing_pkgs[@]}" -gt 0 ]]; then
+    cat >&2 <<EOM
+ERROR: compiler toolchain packages are missing in env ${TARGET_ENV}:
+  ${missing_pkgs[*]}
+This offline bundle's explicit-linux-64.txt does not include the full toolchain.
+Rebuild bundle with updated build script, or install online:
+  conda install -n ${TARGET_ENV} -c conda-forge gcc_linux-64 gxx_linux-64 binutils_linux-64 make libgcc-ng libstdcxx-ng
+EOM
+    exit 1
+  fi
+
+  echo "Compiler toolchain is present in env: ${TARGET_ENV}"
+else
+  echo "Compiler toolchain installation skipped (INSTALL_TOOLCHAIN=${INSTALL_TOOLCHAIN})."
+fi
+
 echo "Conda offline env created: ${TARGET_ENV}"
 EOF
 chmod +x "${CONDA_DIR}/install_conda_offline.sh"
